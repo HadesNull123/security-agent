@@ -44,6 +44,7 @@ from src.core.models import Finding, ScanSession, Target, TargetType, ToolExecut
 from src.scanner.output_filter import OutputFilter
 from src.agent.prompts import (
     ANALYSIS_PROMPT,
+    ENRICHMENT_PROMPT,
     EXPLOITATION_PROMPT,
     RECON_PROMPT,
     REPORTING_PROMPT,
@@ -806,6 +807,9 @@ class SecurityAgent:
 
         self.token_tracker.check_budget()
 
+        # ★ Load all tool output files for comprehensive AI review
+        tool_output_summaries = self._load_tool_output_files()
+
         # Include existing findings in analysis context
         existing_findings = self._get_findings_detail()
         scan_context = self.context.get("scanning", "No scan data")
@@ -819,6 +823,7 @@ class SecurityAgent:
         prompt = ANALYSIS_PROMPT.format(
             target=", ".join(t.value for t in self.session.targets),
             findings=analysis_input,
+            tool_output_files=tool_output_summaries,
         )
         self.token_tracker.track(prompt)
 
@@ -839,6 +844,9 @@ class SecurityAgent:
                 await self.db.save_finding(self.session.id, finding)
                 logger.info(f"📋 Finding from analysis: [{finding.severity.value.upper()}] {finding.title}")
 
+        # ★ AI-enrich findings that lack detailed descriptions
+        await self._ai_enrich_findings()
+
         self.memory.store(
             content=analysis_text[:5000],
             category="analysis",
@@ -846,6 +854,127 @@ class SecurityAgent:
         )
 
         logger.info(f"Analysis completed. Total findings: {len(self.session.findings)}")
+
+    def _load_tool_output_files(self) -> str:
+        """Load all saved tool output JSON files and return a summary for AI analysis."""
+        import os
+        import glob
+        output_dir = os.path.join(".", "data", "tool_outputs", "latest")
+        if not os.path.exists(output_dir):
+            return "No tool output files found."
+
+        summaries = []
+        for filepath in sorted(glob.glob(os.path.join(output_dir, "*.json"))):
+            try:
+                with open(filepath) as f:
+                    data = json.load(f)
+                tool_name = data.get("tool", "unknown")
+                success = data.get("success", False)
+                exec_time = data.get("execution_time", 0)
+                command = data.get("command", "")
+                raw_preview = data.get("raw_output_preview", "")[:1500]
+                error = data.get("error", "")
+
+                summary = (
+                    f"### {tool_name} ({'✅ SUCCESS' if success else '❌ FAILED'}) "
+                    f"[{exec_time:.1f}s]\n"
+                    f"Command: {command}\n"
+                )
+                if error:
+                    summary += f"Error: {error}\n"
+                if raw_preview:
+                    summary += f"Output:\n```\n{raw_preview}\n```\n"
+                summaries.append(summary)
+            except Exception as e:
+                logger.debug(f"Could not load tool output {filepath}: {e}")
+
+        if not summaries:
+            return "No tool output files found."
+
+        return f"\n{'=' * 60}\n".join(summaries)
+
+    async def _ai_enrich_findings(self) -> None:
+        """Enrich findings that lack detailed AI analysis (description, remediation, impact)."""
+        if not self.session or not self.session.findings:
+            return
+
+        findings_to_enrich = [
+            f for f in self.session.findings
+            if not f.description or len(f.description) < 50
+            or not f.remediation or len(f.remediation) < 30
+        ]
+
+        if not findings_to_enrich:
+            logger.info("All findings already have detailed descriptions.")
+            return
+
+        logger.info(f"Enriching {len(findings_to_enrich)} findings with AI analysis...")
+
+        for finding in findings_to_enrich[:10]:  # Limit to 10 to avoid token waste
+            try:
+                self.token_tracker.check_budget()
+            except TokenBudgetExhausted:
+                logger.warning("Token budget exhausted during enrichment.")
+                break
+
+            try:
+                finding_json = json.dumps(finding.model_dump(mode="json"), indent=2, default=str)
+                # Get relevant tool output from memory
+                raw_output = self.memory.search(
+                    query=f"{finding.title} {finding.affected_url or finding.affected_host}",
+                    top_k=2,
+                )
+                raw_output_text = "\n".join(r.get("content", "")[:500] for r in raw_output) if raw_output else "No raw output available"
+
+                prompt = ENRICHMENT_PROMPT.format(
+                    finding_json=finding_json,
+                    raw_output=raw_output_text,
+                )
+                self.token_tracker.track(prompt)
+
+                response = await self.llm.ainvoke([
+                    SystemMessage(content="You are an expert security analyst."),
+                    HumanMessage(content=prompt),
+                ])
+                enrichment_text = response.content if hasattr(response, "content") else str(response)
+                self.token_tracker.track(enrichment_text)
+
+                # Parse enrichment response
+                enrichment = self._parse_enrichment(enrichment_text)
+                if enrichment:
+                    if enrichment.get("description") and len(enrichment["description"]) > len(finding.description or ""):
+                        finding.description = enrichment["description"]
+                    if enrichment.get("remediation") and len(enrichment["remediation"]) > len(finding.remediation or ""):
+                        finding.remediation = enrichment["remediation"]
+                    if enrichment.get("cvss_score"):
+                        finding.cvss_score = float(enrichment["cvss_score"])
+                    if enrichment.get("references"):
+                        finding.references = enrichment["references"]
+                    # Store impact in description if available
+                    if enrichment.get("impact") and enrichment["impact"] not in (finding.description or ""):
+                        finding.description = (finding.description or "") + f"\n\n**Impact:** {enrichment['impact']}"
+
+                    logger.info(f"✨ Enriched: {finding.title}")
+
+            except Exception as e:
+                logger.warning(f"Failed to enrich finding '{finding.title}': {e}")
+
+    def _parse_enrichment(self, text: str) -> dict | None:
+        """Extract JSON from AI enrichment response."""
+        import re
+        # Try to find JSON in code blocks
+        json_match = re.search(r'```(?:json)?\s*\n?(\{.*?\})\s*```', text, re.DOTALL)
+        if json_match:
+            try:
+                return json.loads(json_match.group(1))
+            except json.JSONDecodeError:
+                pass
+        # Try raw JSON parse
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError:
+            pass
+        return None
 
     def _get_exploitable_findings_summary(self) -> str:
         if not self.session or not self.session.findings:
@@ -880,6 +1009,14 @@ class SecurityAgent:
             report_path = reporter.generate(self.session)
             logger.info(f"Report saved to: {report_path}")
             self.context["report_path"] = report_path
+
+            # Also generate JSON report
+            try:
+                json_path = reporter.generate_json(self.session)
+                logger.info(f"JSON report saved to: {json_path}")
+                self.context["json_report_path"] = json_path
+            except Exception as e:
+                logger.warning(f"JSON report generation failed: {e}")
         except Exception as e:
             logger.warning(f"Jinja2 report failed, using LLM fallback: {e}")
             # Fallback: LLM-generated report

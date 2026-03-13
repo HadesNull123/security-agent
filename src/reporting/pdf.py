@@ -213,6 +213,11 @@ def generate_pdf_report(
             ["Tool", f.tool_source],
             ["Affected", (f.affected_url or f.affected_host)[:80]],
         ]
+        # Add references if available
+        if f.references:
+            refs_text = ", ".join(str(r) for r in f.references[:5])
+            detail_data.append(["References", refs_text])
+
         detail_table = Table(detail_data, colWidths=[100, 380])
         detail_table.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#e8e8e8")),
@@ -224,12 +229,19 @@ def generate_pdf_report(
         story.append(Spacer(1, 5))
 
         if f.description:
-            story.append(Paragraph(f"<b>Description:</b> {_escape_html(f.description[:500])}", styles["BodyText_Custom"]))
+            desc_text = f.description[:2000]
+            # Check if impact is embedded in description
+            if "**Impact:**" in desc_text:
+                parts = desc_text.split("**Impact:**", 1)
+                story.append(Paragraph(f"<b>Description:</b> {_escape_html(parts[0].strip())}", styles["BodyText_Custom"]))
+                story.append(Paragraph(f"<b>Impact:</b> {_escape_html(parts[1].strip())}", styles["BodyText_Custom"]))
+            else:
+                story.append(Paragraph(f"<b>Description:</b> {_escape_html(desc_text)}", styles["BodyText_Custom"]))
         if f.evidence:
             story.append(Paragraph(f"<b>Evidence:</b>", styles["BodyText_Custom"]))
-            story.append(Paragraph(_escape_html(f.evidence[:800]), styles["Code"]))
+            story.append(Paragraph(_escape_html(f.evidence[:1500]), styles["Code"]))
         if f.remediation:
-            story.append(Paragraph(f"<b>Remediation:</b> {_escape_html(f.remediation[:500])}", styles["BodyText_Custom"]))
+            story.append(Paragraph(f"<b>Remediation:</b> {_escape_html(f.remediation[:1500])}", styles["BodyText_Custom"]))
 
         story.append(Spacer(1, 10))
 
@@ -257,6 +269,47 @@ def generate_pdf_report(
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f5f5f5")]),
         ]))
         story.append(log_table)
+
+    # ── AI Risk Assessment Summary ──
+    if session.findings:
+        story.append(Spacer(1, 15))
+        story.append(Paragraph("5. AI Risk Assessment Summary", styles["SectionHeader"]))
+
+        # Count by severity with CVSS ranges
+        critical_count = sum(1 for f in session.findings if f.severity.value == "critical")
+        high_count = sum(1 for f in session.findings if f.severity.value == "high")
+        medium_count = sum(1 for f in session.findings if f.severity.value == "medium")
+
+        # Calculate average CVSS
+        cvss_scores = [f.cvss_score for f in session.findings if f.cvss_score]
+        avg_cvss = sum(cvss_scores) / len(cvss_scores) if cvss_scores else 0
+
+        risk_text = f"""Based on AI analysis of {len(session.findings)} findings:"""
+        story.append(Paragraph(risk_text, styles["BodyText_Custom"]))
+
+        if critical_count > 0:
+            story.append(Paragraph(
+                f'<font color="#dc2626"><b>⚠ CRITICAL ({critical_count})</b>: '
+                f'Immediate action required. These vulnerabilities pose severe risk.</font>',
+                styles["BodyText_Custom"],
+            ))
+        if high_count > 0:
+            story.append(Paragraph(
+                f'<font color="#ea580c"><b>⚡ HIGH ({high_count})</b>: '
+                f'High priority. Should be remediated within the current sprint.</font>',
+                styles["BodyText_Custom"],
+            ))
+        if medium_count > 0:
+            story.append(Paragraph(
+                f'<font color="#ca8a04"><b>⚙ MEDIUM ({medium_count})</b>: '
+                f'Address in upcoming releases. Monitor for exploitation.</font>',
+                styles["BodyText_Custom"],
+            ))
+        if avg_cvss > 0:
+            story.append(Paragraph(
+                f'<b>Average CVSS Score:</b> {avg_cvss:.1f} / 10.0',
+                styles["BodyText_Custom"],
+            ))
 
     # Footer
     story.append(Spacer(1, 30))

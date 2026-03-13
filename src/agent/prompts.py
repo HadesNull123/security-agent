@@ -76,36 +76,86 @@ IMPORTANT: After each scanning tool completes, use the `add_finding` tool to reg
 any vulnerabilities discovered. Extract: title, severity, affected URL, description, evidence.
 """
 
-ANALYSIS_PROMPT = """You are in the ANALYSIS phase. Analyze the scan results and determine:
+ANALYSIS_PROMPT = """You are in the ANALYSIS phase. You are a senior security analyst. Analyze ALL tool outputs comprehensively.
 
 Target: {target}
 Scan Findings: {findings}
 
-Tasks:
-1. Deduplicate findings (same vulnerability reported by multiple tools)
-2. Classify each finding by severity and confidence
-3. Identify which findings are exploitable
-4. Prioritize findings for exploitation
-5. Suggest remediation for each finding
+Tool Output Files Available: {tool_output_files}
 
-For EACH finding, you MUST output a JSON block like this:
+## Tasks:
+1. Review ALL tool outputs — do not skip anything
+2. Deduplicate findings (same vulnerability from multiple tools)
+3. For EACH unique finding, provide a comprehensive assessment:
+
+## For EACH Finding You MUST Provide:
+- **title**: Clear, specific name (e.g., "SQL Injection in /api/login via 'username' parameter")
+- **severity**: critical / high / medium / low / info
+- **confidence**: confirmed / high / medium / low
+- **cvss_score**: Estimate CVSS 3.1 score (0.0 - 10.0)
+- **description**: DETAILED description (3-5 sentences minimum):
+  - What the vulnerability IS
+  - Where exactly it exists (URL, parameter, header, etc.)
+  - How it was detected (which tool, what evidence)
+- **impact**: What an attacker COULD DO if exploiting this vulnerability:
+  - Data exposure risk
+  - System compromise potential
+  - Business impact
+- **evidence**: Exact tool output, HTTP request/response, or test result proving the vulnerability
+- **remediation**: Step-by-step fix instructions:
+  - Immediate mitigation (quick fix)
+  - Long-term solution (proper fix)
+  - Code example if applicable
+- **references**: Relevant CWE, OWASP Top 10, CVE IDs
+- **category**: sqli / xss / rce / ssrf / lfi / idor / cors / misconfig / info_disclosure / etc.
+- **tool_source**: Which tool(s) detected this
+- **affected_url**: Full URL of affected resource
+- **affected_host**: Host/IP
+
+## Output Format:
+Return ALL findings as a JSON array:
 ```json
 [
   {{
-    "title": "SQL Injection in login page",
+    "title": "SQL Injection in login form",
     "severity": "critical",
-    "confidence": "high",
-    "affected_url": "http://target.com/login",
-    "description": "The login form is vulnerable to SQL injection",
-    "evidence": "Parameter 'username' is injectable",
-    "remediation": "Use parameterized queries",
-    "tool_source": "nuclei",
-    "category": "sqli"
+    "confidence": "confirmed",
+    "cvss_score": 9.8,
+    "description": "The login form at /api/login is vulnerable to SQL injection via the 'username' parameter. Union-based and blind time-based injection techniques are possible. This was confirmed by both nuclei template cve-2021-xxxx and manual SQLMap testing.",
+    "impact": "An attacker can extract all database contents including user credentials, personal data, and administrative accounts. Full database compromise is possible. Risk of complete data breach.",
+    "evidence": "sqlmap identified the parameter as injectable: Parameter: username (POST)\\nType: UNION query\\nPayload: admin' UNION SELECT 1,2,3--",
+    "remediation": "1. IMMEDIATE: Add input validation and WAF rule to block SQL metacharacters\\n2. LONG-TERM: Use parameterized queries/prepared statements\\n3. Code example: cursor.execute('SELECT * FROM users WHERE username = ?', (username,))",
+    "references": ["CWE-89", "OWASP A03:2021 Injection", "CVE-2021-XXXXX"],
+    "category": "sqli",
+    "tool_source": "sqlmap, nuclei",
+    "affected_url": "http://target.com/api/login",
+    "affected_host": "target.com"
   }}
 ]
 ```
 
-Return ALL findings as a JSON array so they can be automatically parsed.
+CRITICAL: Be thorough. Every finding must have a complete description, impact, and remediation.
+Do NOT return findings with empty descriptions or generic remediation like "fix this vulnerability."
+"""
+
+ENRICHMENT_PROMPT = """You are a senior security analyst. Analyze this vulnerability finding and provide comprehensive details.
+
+Finding: {finding_json}
+Tool Raw Output: {raw_output}
+
+Provide an enriched analysis in JSON format:
+```json
+{{
+  "description": "Detailed 3-5 sentence description of the vulnerability",
+  "impact": "What an attacker could achieve by exploiting this",
+  "cvss_score": 0.0,
+  "remediation": "Step-by-step remediation:\\n1. Immediate fix\\n2. Long-term solution",
+  "references": ["CWE-XXX", "OWASP category"],
+  "risk_level": "Critical/High/Medium/Low - brief justification"
+}}
+```
+
+Be specific and actionable. Do not use generic descriptions.
 """
 
 EXPLOITATION_PROMPT = """You are in the EXPLOITATION phase. Attempt to exploit confirmed vulnerabilities.
@@ -164,3 +214,4 @@ Generate a professional penetration testing report with these sections:
 
 Use markdown format. Be thorough but concise.
 """
+

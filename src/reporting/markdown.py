@@ -94,8 +94,14 @@ No findings were identified during this assessment.
 {% if f.evidence %}
 **Evidence:**
 ```
-{{ f.evidence[:2000] }}
+{{ f.evidence[:3000] }}
 ```
+{% endif %}
+
+{% if f.description and '**Impact:**' in f.description %}
+{% set parts = f.description.split('**Impact:**') %}
+**Impact:**
+{{ parts[1].strip() }}
 {% endif %}
 
 {% if f.remediation %}
@@ -144,7 +150,24 @@ No immediate actions required.
 1. **{{ f.title }}**: {{ f.remediation or "Consider implementing as part of security hardening." }}
 {% endfor %}
 
-## 7. Tool Execution Log
+## 7. AI Risk Assessment Summary
+
+{% if findings %}
+| Metric | Value |
+|--------|-------|
+| **Total Findings** | {{ findings | length }} |
+| **Critical** | {{ findings | selectattr('severity', 'equalto', severity_critical) | list | length }} |
+| **High** | {{ findings | selectattr('severity', 'equalto', severity_high) | list | length }} |
+{% if avg_cvss > 0 %}| **Average CVSS** | {{ '%.1f' | format(avg_cvss) }} / 10.0 |{% endif %}
+
+{% if findings | selectattr('severity', 'equalto', severity_critical) | list | length > 0 %}
+> ⚠️ **CRITICAL vulnerabilities detected.** Immediate remediation is required before production deployment.
+{% endif %}
+{% else %}
+No findings to assess.
+{% endif %}
+
+## 8. Tool Execution Log
 
 | Tool | Phase | Status | Duration |
 |------|-------|--------|----------|
@@ -186,6 +209,10 @@ class ReportGenerator:
             key=lambda f: severity_order.get(f.severity.value, 5),
         )
 
+        # Calculate average CVSS
+        cvss_scores = [f.cvss_score for f in session.findings if f.cvss_score]
+        avg_cvss = sum(cvss_scores) / len(cvss_scores) if cvss_scores else 0
+
         report = template.render(
             session=session,
             targets=targets,
@@ -196,6 +223,9 @@ class ReportGenerator:
             exploit_results=session.exploit_results,
             duration=duration,
             report_date=datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
+            avg_cvss=avg_cvss,
+            severity_critical=Severity.CRITICAL,
+            severity_high=Severity.HIGH,
         )
 
         # Save report
