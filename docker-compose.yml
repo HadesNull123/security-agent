@@ -1,0 +1,72 @@
+# =============================================================================
+# Security Agent - Docker Compose
+# =============================================================================
+# Usage:
+#   1. Copy .env.example to .env and fill in your API keys
+#   2. Run: docker compose up -d
+#   3. Execute scans: docker compose exec agent secagent scan example.com
+# =============================================================================
+
+services:
+  # ── Security Agent ──────────────────────────────────────────
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: security-agent
+    env_file: .env
+    volumes:
+      - ./reports:/app/reports
+      - ./data:/app/data
+      - agent-nuclei-templates:/root/nuclei-templates
+    networks:
+      - agent-network
+    depends_on:
+      - zap
+    entrypoint: ["tail", "-f", "/dev/null"]  # Keep alive for exec
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"
+          memory: 4G
+
+  # ── OWASP ZAP Proxy (optional) ─────────────────────────────
+  zap:
+    image: ghcr.io/zaproxy/zaproxy:stable
+    container_name: zap-proxy
+    command: >
+      zap.sh -daemon
+      -host 0.0.0.0
+      -port 8080
+      -config api.key=${ZAP_API_KEY:-changeme}
+      -config api.addrs.addr.name=.*
+      -config api.addrs.addr.regex=true
+    ports:
+      - "8080:8080"
+    networks:
+      - agent-network
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2G
+
+  # ── Metasploit (optional) ───────────────────────────────────
+  # Uncomment if you want Metasploit integration
+  # metasploit:
+  #   image: metasploitframework/metasploit-framework:latest
+  #   container_name: metasploit
+  #   command: >
+  #     msfrpcd -P ${METASPLOIT_RPC_PASSWORD:-changeme}
+  #     -S -a 0.0.0.0 -p 55553
+  #   ports:
+  #     - "55553:55553"
+  #   networks:
+  #     - agent-network
+
+networks:
+  agent-network:
+    driver: bridge
+
+volumes:
+  agent-nuclei-templates:
