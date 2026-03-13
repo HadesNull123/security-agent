@@ -14,15 +14,21 @@ class KatanaTool(BaseTool):
     async def _run(self, target: str, **kwargs: Any) -> ToolResult:
         cmd = ["katana", "-u", target, "-json", "-silent"]
 
-        # Crawl depth
-        if depth := kwargs.get("depth"):
-            cmd.extend(["-d", str(depth)])
-        else:
-            cmd.extend(["-d", "3"])
+        # Crawl depth — default 3
+        depth = kwargs.get("depth", 3)
+        cmd.extend(["-d", str(depth)])
 
-        # Concurrency
-        if concurrency := kwargs.get("concurrency"):
-            cmd.extend(["-c", str(concurrency)])
+        # ★ Max URLs to crawl — prevent endless crawling on large sites
+        max_urls = kwargs.get("max_urls", 500)
+        cmd.extend(["-em", str(max_urls)])
+
+        # Concurrency — default 20
+        concurrency = kwargs.get("concurrency", 20)
+        cmd.extend(["-c", str(concurrency)])
+
+        # ★ Rate limit — default 100 req/s
+        rate_limit = kwargs.get("rate_limit", 100)
+        cmd.extend(["-rl", str(rate_limit)])
 
         # Headless mode
         if kwargs.get("headless"):
@@ -35,6 +41,9 @@ class KatanaTool(BaseTool):
         # JS crawling
         if kwargs.get("js_crawl"):
             cmd.append("-jc")
+
+        # ★ Timeout per request
+        cmd.extend(["-timeout", "10"])
 
         returncode, stdout, stderr = await run_command(cmd, timeout=self.timeout)
 

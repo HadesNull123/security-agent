@@ -14,19 +14,22 @@ class NaabuTool(BaseTool):
     async def _run(self, target: str, **kwargs: Any) -> ToolResult:
         cmd = ["naabu", "-host", target, "-json", "-silent"]
 
-        # Port specification
+        # Port specification — default top 100
         if ports := kwargs.get("ports"):
-            cmd.extend(["-p", ports])  # e.g. "80,443,8080" or "1-1000"
+            cmd.extend(["-p", ports])
         else:
             cmd.extend(["-top-ports", kwargs.get("top_ports", "100")])
 
-        # Rate limit
-        if rate := kwargs.get("rate"):
-            cmd.extend(["-rate", str(rate)])
+        # ★ Rate limit — default 1000 packets/s for fast scanning
+        rate = kwargs.get("rate", 1000)
+        cmd.extend(["-rate", str(rate)])
 
         # Scan type
         if scan_type := kwargs.get("scan_type"):  # s, c
             cmd.extend(["-scan-type", scan_type])
+
+        # ★ Timeout per host
+        cmd.extend(["-timeout", "5000"])  # milliseconds
 
         returncode, stdout, stderr = await run_command(cmd, timeout=self.timeout)
 

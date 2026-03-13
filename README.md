@@ -44,6 +44,41 @@ The AI autonomously selects appropriate tools, analyzes results, generates custo
 | **Scanning** | Nuclei, ffuf, Gobuster, Nikto, TestSSL, ZAP (API), Acunetix (API) | Vulnerability scanning, fuzzing, directory brute-forcing, SSL/TLS auditing, web application scanning |
 | **Exploitation** | SQLMap, Commix, SearchSploit, Metasploit (RPC), Custom Exploit Engine | SQL injection, command injection, known CVE exploits, AI-generated Python exploits |
 
+### ⚡ Smart Tool Defaults
+
+All tools are pre-configured with optimized defaults for fast scanning. No more waiting 30+ minutes for a single tool:
+
+| Tool | Default Behavior | Speed |
+|------|-----------------|-------|
+| **Nuclei** | Auto-scan (`-as`) + severity filter (`critical,high,medium`) | ~2-5 min |
+| **ffuf** | Filter 404, 40 threads, auto-download wordlist | ~1-3 min |
+| **Gobuster** | 40 threads, 10s timeout, auto-download wordlist | ~1-3 min |
+| **Nikto** | Max 5 min scan time, 10s/request timeout | max 5 min |
+| **TestSSL** | `--fast` mode, 10s connect timeout | ~2-3 min |
+| **Katana** | Max 500 URLs, 100 req/s, depth 3 | ~1-2 min |
+| **Naabu** | Top-100 ports, rate 1000 pkt/s | ~30s-1 min |
+| **SQLMap** | Level 2, risk 2, 4 threads | ~3-5 min |
+| **Commix** | Level 2, 10s timeout | ~2-3 min |
+
+### 📂 Auto-Download Wordlists
+
+Wordlists are **automatically managed** — no manual setup required:
+- Checks system paths (`/usr/share/seclists/`, `/usr/share/wordlists/`) first
+- If missing, downloads **SecLists common.txt** from GitHub to `~/.secagent/wordlists/`
+- Falls back to a built-in minimal wordlist if offline
+
+### 📁 Tool Output Saving
+
+Every tool execution is automatically saved for inspection:
+```
+data/tool_outputs/latest/
+├── subfinder_20250313_174522.json
+├── httpx_20250313_174535.json
+├── nuclei_20250313_174612.json
+└── ffuf_20250313_174701.json
+```
+Each JSON file contains: command used, execution time, parsed data, raw output preview, and success/error status.
+
 ### 🔒 Security & Safety
 - **Command Validation** — blocks 40+ dangerous patterns (destructive commands, reverse shells, etc.)
 - **Scope Enforcement** — restricts scanning to explicitly authorized targets
@@ -455,7 +490,7 @@ Create a new file in `src/tools/<phase>/` (e.g., `src/tools/scanner/my_tool.py`)
 
 from __future__ import annotations
 from typing import Any
-from src.config import ScanPhase
+from src.core.config import ScanPhase
 from src.tools import BaseTool, ToolResult, run_command, parse_json_output
 
 
@@ -468,9 +503,12 @@ class MyTool(BaseTool):
     async def _run(self, target: str, **kwargs: Any) -> ToolResult:
         cmd = ["mytool", "-target", target, "-json"]
 
-        # Add optional parameters
-        if severity := kwargs.get("severity"):
-            cmd.extend(["-severity", severity])
+        # Add optional parameters with smart defaults
+        severity = kwargs.get("severity", "critical,high,medium")
+        cmd.extend(["-severity", severity])
+
+        # Performance defaults
+        cmd.extend(["-timeout", "15"])
 
         returncode, stdout, stderr = await run_command(cmd, timeout=self.timeout)
 
@@ -494,6 +532,8 @@ class MyTool(BaseTool):
         )
 ```
 
+> **Note**: Tool output is automatically saved to `data/tool_outputs/` by `BaseTool.run()`. No additional code needed.
+
 #### Step 2: Register the tool
 
 Add import and export in `src/tools/<phase>/__init__.py`:
@@ -502,13 +542,13 @@ Add import and export in `src/tools/<phase>/__init__.py`:
 from src.tools.scanner.my_tool import MyTool
 ```
 
-Register in `src/agent.py` → `_init_tools()`:
+Register in `src/agent/engine.py` → `_init_tools()`:
 
 ```python
 self.scanner_tools["mytool"] = MyTool(timeout=self.config.agent.tool_timeout)
 ```
 
-Add Pydantic input schema in `src/agent.py` → schemas section:
+Add Pydantic input schema in `src/agent/engine.py` → schemas section:
 
 ```python
 class MyToolInput(BaseModel):
@@ -529,7 +569,7 @@ StructuredTool.from_function(
 
 #### Step 3: Add install configuration
 
-In `src/installer.py` → `TOOL_REGISTRY`:
+In `src/scanner/installer.py` → `TOOL_REGISTRY`:
 
 ```python
 "mytool": ToolInfo(
@@ -541,7 +581,7 @@ In `src/installer.py` → `TOOL_REGISTRY`:
 ),
 ```
 
-In `src/output_filter.py` → `MAX_OUTPUT_TOKENS`:
+In `src/scanner/output_filter.py` → `MAX_OUTPUT_TOKENS`:
 
 ```python
 "mytool": 8000,
@@ -649,41 +689,78 @@ Skills are automatically loaded from `src/skills_data/` — no code changes need
 
 ```
 security_agent/
-├── main.py                     # Application entry point
-├── pyproject.toml              # Dependencies and build configuration
-├── .env.example                # Configuration template
-├── Dockerfile                  # Multi-stage build with all security tools
-├── docker-compose.yml          # Container orchestration (Agent + ZAP + Metasploit)
+├── main.py                         # Application entry point
+├── pyproject.toml                  # Dependencies, build config, pip packaging
+├── .env.example                    # Configuration template
+├── Dockerfile                      # Multi-stage build with all security tools
+├── docker-compose.yml              # Container orchestration (Agent + ZAP + Metasploit)
 ├── src/
-│   ├── cli.py                  # CLI interface (Click + Rich)
-│   ├── agent.py                # Core AI agent orchestrator (LangChain)
-│   ├── config.py               # Configuration management (pydantic-settings)
-│   ├── models.py               # Data models (Pydantic)
-│   ├── prompts.py              # Phase-specific AI prompts
-│   ├── llm_factory.py          # LLM provider factory
-│   ├── safety.py               # Command validation and scope enforcement
-│   ├── sandbox.py              # Exploit code sandbox (AST-based validation)
-│   ├── database.py             # Async SQLite persistence
-│   ├── memory.py               # Vector memory (TF-IDF, cosine similarity)
-│   ├── installer.py            # Automatic tool installer (go/pip/apt/manual)
-│   ├── output_filter.py        # Tool output truncation and noise filtering
-│   ├── findings_parser.py      # Structured finding extraction from tool outputs
-│   ├── console_ui.py           # Real-time Rich dashboard
-│   ├── reporting.py            # Jinja2-based Markdown report generator
-│   ├── pdf_report.py           # PDF report generator (reportlab)
-│   ├── skills.py               # Skill and workflow loader
-│   └── tools/
-│       ├── __init__.py         # BaseTool, run_command, shared utilities
-│       ├── recon/              # Reconnaissance tools (9 tools)
-│       ├── scanner/            # Scanning tools (7 tools)
-│       └── exploit/            # Exploitation tools (5 tools)
-│   └── skills_data/            # Skill definitions (bundled with package)
-│       ├── recon/              # Recon tool guides and workflows
-│       ├── scanner/            # Scanner guides and detection strategies
-│       ├── exploit/            # Exploitation guides and patterns
-│       └── modes/              # Scan mode configs (quick/normal/deep)
-├── reports/                    # Generated reports (auto-created)
-└── data/                       # SQLite database (auto-created)
+│   ├── __init__.py
+│   ├── cli.py                      # CLI interface (Click + Rich)
+│   ├── core/                       # Core infrastructure
+│   │   ├── config.py               # Configuration management (pydantic-settings)
+│   │   ├── models.py               # Data models (Pydantic)
+│   │   └── database.py             # Async SQLite persistence
+│   ├── agent/                      # AI orchestration
+│   │   ├── engine.py               # Core AI agent orchestrator (LangChain)
+│   │   ├── prompts.py              # Phase-specific AI prompts
+│   │   ├── llm_factory.py          # LLM provider factory
+│   │   ├── memory.py               # Vector memory (TF-IDF, cosine similarity)
+│   │   └── skills.py               # Skill and workflow loader
+│   ├── security/                   # Safety and sandboxing
+│   │   ├── safety.py               # Command validation and scope enforcement
+│   │   └── sandbox.py              # Exploit code sandbox (AST-based validation)
+│   ├── scanner/                    # Scanner infrastructure
+│   │   ├── installer.py            # Automatic tool installer (go/pip/apt/manual)
+│   │   ├── output_filter.py        # Tool output truncation and noise filtering
+│   │   └── findings_parser.py      # Structured finding extraction
+│   ├── reporting/                  # Report generation
+│   │   ├── markdown.py             # Jinja2-based Markdown report generator
+│   │   └── pdf.py                  # PDF report generator (reportlab)
+│   ├── ui/                         # User interface
+│   │   └── console.py              # Real-time Rich dashboard
+│   ├── tools/                      # Security tool wrappers
+│   │   ├── __init__.py             # BaseTool, run_command, ensure_wordlist,
+│   │   │                           # save_tool_output, parse_json_lines
+│   │   ├── recon/                  # Reconnaissance (9 tools)
+│   │   │   ├── subfinder.py        # Subdomain discovery
+│   │   │   ├── naabu.py            # Port scanning
+│   │   │   ├── katana.py           # Web crawling
+│   │   │   ├── httpx_tool.py       # HTTP probing (Go binary auto-detection)
+│   │   │   ├── amass.py            # DNS enumeration
+│   │   │   ├── dnsx.py             # DNS resolution
+│   │   │   ├── theharvester.py     # OSINT gathering
+│   │   │   ├── whatweb.py          # Technology fingerprinting
+│   │   │   └── wafw00f.py          # WAF detection
+│   │   ├── scanner/                # Scanning (7 tools)
+│   │   │   ├── nuclei.py           # Template-based vuln scanner
+│   │   │   ├── ffuf.py             # Web fuzzer
+│   │   │   ├── gobuster.py         # Directory brute-forcing
+│   │   │   ├── nikto.py            # Web server scanner
+│   │   │   ├── testssl.py          # SSL/TLS auditing
+│   │   │   ├── zap.py              # OWASP ZAP (API)
+│   │   │   └── acunetix.py         # Acunetix (API)
+│   │   └── exploit/                # Exploitation (5 tools)
+│   │       ├── sqlmap.py           # SQL injection
+│   │       ├── commix.py           # Command injection
+│   │       ├── searchsploit.py     # Exploit-DB search
+│   │       ├── metasploit.py       # Metasploit (RPC)
+│   │       └── custom_exploit.py   # AI-generated exploit engine
+│   └── skills_data/                # Skill definitions (bundled with package)
+│       ├── recon/                  # Recon tool guides and workflows
+│       ├── scanner/                # Scanner guides and detection strategies
+│       ├── exploit/                # Exploitation guides and patterns
+│       └── modes/                  # Scan mode configs (quick/normal/deep)
+├── reports/                        # Generated reports (auto-created)
+├── data/
+│   ├── security_agent.db           # SQLite database (auto-created)
+│   └── tool_outputs/               # Per-tool JSON output logs (auto-created)
+│       └── latest/
+│           ├── subfinder_*.json
+│           ├── nuclei_*.json
+│           └── ...
+└── ~/.secagent/wordlists/          # Auto-downloaded wordlists
+    └── common.txt                  # SecLists common.txt (~4600 entries)
 ```
 
 ---

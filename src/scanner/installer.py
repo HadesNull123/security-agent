@@ -174,10 +174,29 @@ class ToolInstaller:
             os.environ["PATH"] = ":".join(prepend_paths) + ":" + current_path
 
     def is_tool_installed(self, tool_name: str) -> bool:
-        """Check if a tool binary exists in PATH."""
+        """Check if a tool binary exists in PATH.
+
+        Special handling for Go tools that conflict with Python packages
+        (e.g. 'httpx' — Python httpx library installs a CLI with the same name).
+        """
         info = TOOL_REGISTRY.get(tool_name)
         if not info:
             return shutil.which(tool_name) is not None
+
+        # For Go-installed tools, check ~/go/bin first (authoritative location)
+        if info.install_method == "go":
+            go_bin_path = os.path.expanduser(f"~/go/bin/{info.binary_name}")
+            if os.path.isfile(go_bin_path) and os.access(go_bin_path, os.X_OK):
+                return True
+            # For httpx specifically: Python httpx library also installs a CLI,
+            # so shutil.which("httpx") may find the WRONG binary.
+            # Only trust shutil.which if the resolved path contains "go/bin".
+            if info.binary_name == "httpx":
+                resolved = shutil.which("httpx")
+                if resolved and "go/bin" in resolved:
+                    return True
+                return False  # Python httpx found, not Go httpx
+
         return shutil.which(info.binary_name) is not None
 
     def get_missing_tools(self, tool_names: list[str]) -> list[str]:

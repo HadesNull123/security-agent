@@ -3,7 +3,7 @@
 from __future__ import annotations
 from typing import Any
 from src.core.config import ScanPhase
-from src.tools import BaseTool, ToolResult, run_command
+from src.tools import BaseTool, ToolResult, run_command, ensure_wordlist
 
 
 class GobusterTool(BaseTool):
@@ -22,15 +22,18 @@ class GobusterTool(BaseTool):
         elif mode == "vhost":
             cmd.extend(["-u", target])
 
-        # Wordlist
-        wordlist = kwargs.get("wordlist", "/usr/share/wordlists/common.txt")
+        # Wordlist — auto-download if needed
+        wordlist = ensure_wordlist(kwargs.get("wordlist"))
         cmd.extend(["-w", wordlist])
 
         # Common options
         cmd.extend(["-q", "--no-color"])
 
-        if threads := kwargs.get("threads"):
-            cmd.extend(["-t", str(threads)])
+        # ★ Performance defaults
+        threads = kwargs.get("threads", 40)
+        cmd.extend(["-t", str(threads)])
+        cmd.extend(["--timeout", "10s"])
+
         if extensions := kwargs.get("extensions"):
             cmd.extend(["-x", extensions])
         if status_codes := kwargs.get("status_codes"):

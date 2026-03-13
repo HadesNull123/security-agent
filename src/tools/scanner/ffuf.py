@@ -3,7 +3,7 @@
 from __future__ import annotations
 from typing import Any
 from src.core.config import ScanPhase
-from src.tools import BaseTool, ToolResult, run_command, parse_json_output
+from src.tools import BaseTool, ToolResult, run_command, parse_json_output, ensure_wordlist
 
 
 class FfufTool(BaseTool):
@@ -17,33 +17,42 @@ class FfufTool(BaseTool):
         """
         cmd = ["ffuf", "-u", target, "-o", "/dev/stdout", "-of", "json", "-s"]
 
-        # Wordlist (required)
-        wordlist = kwargs.get("wordlist", "/usr/share/wordlists/common.txt")
+        # Wordlist — auto-download if needed
+        wordlist = ensure_wordlist(kwargs.get("wordlist"))
         cmd.extend(["-w", wordlist])
 
-        # Filters
+        # Filters — default: filter out 404
+        has_filter = False
         if mc := kwargs.get("match_codes"):
-            cmd.extend(["-mc", mc])  # e.g. "200,301,302"
+            cmd.extend(["-mc", mc])
+            has_filter = True
         if fc := kwargs.get("filter_codes"):
-            cmd.extend(["-fc", fc])  # e.g. "404"
+            cmd.extend(["-fc", fc])
+            has_filter = True
         if ms := kwargs.get("match_size"):
             cmd.extend(["-ms", ms])
+            has_filter = True
         if fs := kwargs.get("filter_size"):
             cmd.extend(["-fs", fs])
+            has_filter = True
         if fw := kwargs.get("filter_words"):
             cmd.extend(["-fw", fw])
+            has_filter = True
         if fl := kwargs.get("filter_lines"):
             cmd.extend(["-fl", fl])
+            has_filter = True
+        if not has_filter:
+            cmd.extend(["-fc", "404"])  # ★ filter 404 by default
 
-        # Speed
-        if threads := kwargs.get("threads"):
-            cmd.extend(["-t", str(threads)])
+        # Speed — default 40 threads
+        threads = kwargs.get("threads", 40)
+        cmd.extend(["-t", str(threads)])
         if rate := kwargs.get("rate"):
             cmd.extend(["-rate", str(rate)])
 
         # Extensions
         if extensions := kwargs.get("extensions"):
-            cmd.extend(["-e", extensions])  # e.g. ".php,.html,.js"
+            cmd.extend(["-e", extensions])
 
         # Method
         if method := kwargs.get("method"):
@@ -57,6 +66,9 @@ class FfufTool(BaseTool):
         # Recursion
         if kwargs.get("recursion"):
             cmd.extend(["-recursion", "-recursion-depth", str(kwargs.get("recursion_depth", 2))])
+
+        # ★ Performance: timeout per request
+        cmd.extend(["-timeout", "10"])
 
         returncode, stdout, stderr = await run_command(cmd, timeout=self.timeout)
 

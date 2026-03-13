@@ -18,18 +18,29 @@ class NucleiTool(BaseTool):
         cmd = ["nuclei", "-u", target, "-json", "-silent"]
 
         # Template selection
+        has_filter = False
         if templates := kwargs.get("templates"):
-            cmd.extend(["-t", templates])  # specific template path or directory
+            cmd.extend(["-t", templates])
+            has_filter = True
         if tags := kwargs.get("tags"):
-            cmd.extend(["-tags", tags])  # e.g. "cve,sqli,xss"
+            cmd.extend(["-tags", tags])
+            has_filter = True
         if severity := kwargs.get("severity"):
-            cmd.extend(["-severity", severity])  # critical,high,medium,low,info
+            cmd.extend(["-severity", severity])
+            has_filter = True
         if exclude_tags := kwargs.get("exclude_tags"):
             cmd.extend(["-etags", exclude_tags])
 
         # Template IDs
         if template_ids := kwargs.get("template_ids"):
             cmd.extend(["-id", template_ids])
+            has_filter = True
+
+        # ★ Smart defaults: if no specific filter, use auto-scan + severity filter
+        # Without this, nuclei runs ALL 9000+ templates which takes 30+ minutes
+        if not has_filter:
+            cmd.extend(["-as"])  # automatic scan (wappalyzer-based template selection)
+            cmd.extend(["-severity", "critical,high,medium"])
 
         # Rate control
         if rate_limit := kwargs.get("rate_limit"):
@@ -46,9 +57,12 @@ class NucleiTool(BaseTool):
         if proxy := kwargs.get("proxy"):
             cmd.extend(["-proxy", proxy])
 
-        # Automatic scan (use all templates)
-        if kwargs.get("automatic", False):
-            cmd.extend(["-as"])  # automatic scan
+        # Performance: timeout per request + max host errors
+        cmd.extend(["-timeout", "15", "-mhe", "10"])
+
+        # Automatic scan (use all templates) — explicit override
+        if kwargs.get("automatic", False) and "-as" not in cmd:
+            cmd.extend(["-as"])
 
         returncode, stdout, stderr = await run_command(cmd, timeout=self.timeout)
 

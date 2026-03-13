@@ -20,8 +20,8 @@ class TestSSLTool(BaseTool):
         output_file = "/tmp/testssl_output.json"
         cmd = ["testssl.sh", "--jsonfile", output_file, "--quiet"]
 
-        # Fast mode
-        if kwargs.get("fast"):
+        # Fast mode — default to fast to avoid 20+ min scans
+        if not kwargs.get("vulnerabilities_only") and not kwargs.get("headers_only") and not kwargs.get("protocols_only"):
             cmd.append("--fast")
 
         # Specific checks
@@ -36,9 +36,9 @@ class TestSSLTool(BaseTool):
         if kwargs.get("sneaky"):
             cmd.append("--sneaky")
 
-        # Timeout
-        if connect_timeout := kwargs.get("connect_timeout"):
-            cmd.extend(["--connect-timeout", str(connect_timeout)])
+        # ★ Connect timeout — default 10s
+        connect_timeout = kwargs.get("connect_timeout", 10)
+        cmd.extend(["--connect-timeout", str(connect_timeout)])
 
         # Target must be last
         cmd.append(target)

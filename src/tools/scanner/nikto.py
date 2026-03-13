@@ -37,13 +37,13 @@ class NiktoTool(BaseTool):
         if evasion := kwargs.get("evasion"):
             cmd.extend(["-evasion", evasion])
 
-        # Max time
-        if maxtime := kwargs.get("maxtime"):
-            cmd.extend(["-maxtime", str(maxtime)])
+        # Max time — default 300s (5 min) to prevent endless scans
+        maxtime = kwargs.get("maxtime", 300)
+        cmd.extend(["-maxtime", str(maxtime)])
 
-        # Timeout
-        if timeout_val := kwargs.get("timeout"):
-            cmd.extend(["-timeout", str(timeout_val)])
+        # Timeout per request — default 10s
+        timeout_val = kwargs.get("timeout", 10)
+        cmd.extend(["-timeout", str(timeout_val)])
 
         returncode, stdout, stderr = await run_command(cmd, timeout=self.timeout)
 
