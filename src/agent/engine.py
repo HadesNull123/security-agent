@@ -713,16 +713,32 @@ class SecurityAgent:
         target_str = ", ".join(targets)
 
         if phase == ScanPhase.RECON:
+            all_tools = self.recon_tools
             available_tools = list(self._get_available_tools(self.recon_tools).keys())
         elif phase == ScanPhase.SCANNING:
+            all_tools = self.scanner_tools
             available_tools = list(self._get_available_tools(self.scanner_tools).keys())
             # Always add add_finding
             available_tools.append("add_finding")
         elif phase == ScanPhase.EXPLOITATION:
+            all_tools = self.exploit_tools
             available_tools = list(self._get_available_tools(self.exploit_tools).keys())
             available_tools.append("add_finding")
         else:
+            all_tools = {}
             available_tools = []
+
+        # ★ Build explicit tool inventory for the AI
+        tool_inventory = f"\n## 🔧 Available Tools ({len(available_tools)} ready)\n"
+        for name, tool in all_tools.items():
+            status = "✅" if name in available_tools else "❌ NOT INSTALLED"
+            tool_inventory += f"- **{name}** [{status}]: {tool.description}\n"
+        if "add_finding" in available_tools:
+            tool_inventory += "- **add_finding** [✅]: Register a security finding/vulnerability\n"
+        missing = [n for n in all_tools if n not in available_tools]
+        if missing:
+            tool_inventory += f"\n⚠️ {len(missing)} tools not installed: {', '.join(missing)}\n"
+        tool_inventory += "\nYou MUST use only the tools marked ✅. Choose the most effective tools for this target.\n"
 
         skills_text = get_skills_prompt(phase.value, available_tools, scan_mode=self.scan_mode)
         mode_text = get_scan_mode_guidance(self.scan_mode)
@@ -769,10 +785,11 @@ class SecurityAgent:
         else:
             base_prompt = f"Continue the security assessment for {target_str}"
 
-        full_prompt = f"{mode_text}\n{budget_info}{findings_info}\n{skills_text}\n"
+        full_prompt = f"{mode_text}\n{budget_info}{findings_info}\n{tool_inventory}\n{skills_text}\n"
         if memory_context:
             full_prompt += f"\n## Relevant Past Context\n{memory_context}\n"
         full_prompt += f"\n{base_prompt}"
+
 
         return full_prompt
 
