@@ -118,8 +118,6 @@ class AgentConfig(BaseSettings):
     llm_model: str = "gemini-2.5-pro"
 
     # Execution limits
-    tool_timeout: int = 300
-    max_scan_time: int = 3600
     max_retries: int = 3
 
     # Paths
@@ -254,8 +252,6 @@ class Config:
         return {
             "llm_provider": self.llm.provider.value,
             "llm_model": self.llm.model,
-            "tool_timeout": self.agent.tool_timeout,
-            "max_scan_time": self.agent.max_scan_time,
             "safe_mode": self.agent.safe_mode,
             "external_apis": {k: "✅ configured" if v else "❌ not configured" for k, v in api_status.items()},
         }

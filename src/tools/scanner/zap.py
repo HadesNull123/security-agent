@@ -13,8 +13,8 @@ class ZAPTool(BaseTool):
     description = "OWASP ZAP automated web application security scanner via API"
     phase = ScanPhase.SCANNING
 
-    def __init__(self, config: ZAPConfig, timeout: int = 600):
-        super().__init__(timeout=timeout)
+    def __init__(self, config: ZAPConfig, **kwargs):
+        super().__init__()
         self.config = config
         self.base_url = config.api_url.rstrip("/")
         self.api_key = config.api_key

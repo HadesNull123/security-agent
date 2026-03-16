@@ -35,8 +35,8 @@ class AcunetixTool(BaseTool):
         "malware": "11111111-1111-1111-1111-111111111120",
     }
 
-    def __init__(self, config: AcunetixConfig, timeout: int = 900):
-        super().__init__(timeout=timeout)
+    def __init__(self, config: AcunetixConfig, **kwargs):
+        super().__init__()
         self.config = config
         self.base_url = config.api_url.rstrip("/")
         self.api_key = config.api_key

@@ -363,42 +363,40 @@ class SecurityAgent:
         return self._llm
 
     def _init_tools(self) -> None:
-        """Initialize available tool instances. Skip tools without config."""
-        timeout = self.config.agent.tool_timeout
-
+        """Initialize available tool instances."""
         self.recon_tools: dict[str, Any] = {
-            "subfinder": SubfinderTool(timeout=timeout),
-            "naabu": NaabuTool(timeout=timeout),
-            "katana": KatanaTool(timeout=timeout),
-            "httpx": HttpxTool(timeout=timeout),
-            "theHarvester": TheHarvesterTool(timeout=timeout),
-            "amass": AmassTool(timeout=timeout),
-            "whatweb": WhatWebTool(timeout=timeout),
-            "wafw00f": Wafw00fTool(timeout=timeout),
-            "dnsx": DnsxTool(timeout=timeout),
+            "subfinder": SubfinderTool(),
+            "naabu": NaabuTool(),
+            "katana": KatanaTool(),
+            "httpx": HttpxTool(),
+            "theHarvester": TheHarvesterTool(),
+            "amass": AmassTool(),
+            "whatweb": WhatWebTool(),
+            "wafw00f": Wafw00fTool(),
+            "dnsx": DnsxTool(),
         }
 
         self.scanner_tools: dict[str, Any] = {
-            "nuclei": NucleiTool(timeout=timeout),
-            "ffuf": FfufTool(timeout=timeout),
-            "gobuster": GobusterTool(timeout=timeout),
-            "nikto": NiktoTool(timeout=timeout),
-            "testssl": TestSSLTool(timeout=timeout),
-            "secret_scanner": SecretScannerTool(timeout=timeout),
+            "nuclei": NucleiTool(),
+            "ffuf": FfufTool(),
+            "gobuster": GobusterTool(),
+            "nikto": NiktoTool(),
+            "testssl": TestSSLTool(),
+            "secret_scanner": SecretScannerTool(),
         }
         if self.config.zap.api_key:
-            self.scanner_tools["zap"] = ZAPTool(self.config.zap, timeout=600)
+            self.scanner_tools["zap"] = ZAPTool(self.config.zap)
         if self.config.acunetix.api_url and self.config.acunetix.api_key:
-            self.scanner_tools["acunetix"] = AcunetixTool(self.config.acunetix, timeout=900)
+            self.scanner_tools["acunetix"] = AcunetixTool(self.config.acunetix)
 
         self.exploit_tools: dict[str, Any] = {
-            "sqlmap": SQLMapTool(timeout=timeout),
-            "commix": CommixTool(timeout=timeout),
-            "searchsploit": SearchSploitTool(timeout=timeout),
-            "custom_exploit": CustomExploitTool(safety_guard=self.safety, timeout=timeout),
+            "sqlmap": SQLMapTool(),
+            "commix": CommixTool(),
+            "searchsploit": SearchSploitTool(),
+            "custom_exploit": CustomExploitTool(safety_guard=self.safety),
         }
         if self.config.metasploit.rpc_password:
-            self.exploit_tools["metasploit"] = MetasploitTool(self.config.metasploit, timeout=600)
+            self.exploit_tools["metasploit"] = MetasploitTool(self.config.metasploit)
 
     def _get_available_tools(self, tool_dict: dict[str, Any]) -> dict[str, Any]:
         available = {}
@@ -440,14 +438,53 @@ class SecurityAgent:
 
             result: ToolResult = await tool_instance.run(**kwargs)
 
-            # UI: tool completed
+            # UI: tool completed + stream key output to tool panel
             if self.ui:
                 summary = ""
                 if result.success and result.data:
                     count = result.data.get("count", result.data.get("total", ""))
                     summary = f"{count} results" if count else "OK"
+                    # Stream key output lines to the tool's panel
+                    data = result.data
+                    if "subdomains" in data:
+                        for sd in data["subdomains"][:5]:
+                            self.ui.tool_output(tool_name, f"  {sd}")
+                        if data.get("count", 0) > 5:
+                            self.ui.tool_output(tool_name, f"  ... +{data['count'] - 5} more")
+                    elif "urls" in data:
+                        for u in data["urls"][:5]:
+                            url = u["url"] if isinstance(u, dict) else str(u)
+                            self.ui.tool_output(tool_name, f"  {url[:100]}")
+                        if data.get("count", 0) > 5:
+                            self.ui.tool_output(tool_name, f"  ... +{data['count'] - 5} more")
+                    elif "hosts" in data:
+                        for h in data["hosts"][:5]:
+                            self.ui.tool_output(tool_name, f"  {h}")
+                    elif "ports" in data:
+                        ports_list = data["ports"]
+                        if isinstance(ports_list, list):
+                            ports_str = ", ".join(str(p.get("port", p) if isinstance(p, dict) else p) for p in ports_list[:10])
+                            self.ui.tool_output(tool_name, f"  Ports: {ports_str}")
+                    elif "leaks_found" in data:
+                        self.ui.tool_output(tool_name, f"  Leaks: {data['leaks_found']}")
+                        for leak in data.get("findings", [])[:3]:
+                            self.ui.tool_output(tool_name, f"  🔑 {leak.get('key_type', '')[:40]}")
+                    elif "vulnerabilities" in data:
+                        for v in data["vulnerabilities"][:5]:
+                            sev = v.get("severity", v.get("info", {}).get("severity", "?"))
+                            name = v.get("vt_name", v.get("info", {}).get("name", v.get("name", "")))[:50]
+                            self.ui.tool_output(tool_name, f"  [{sev}] {name}")
+                    elif "technologies" in data:
+                        for t in data["technologies"][:5]:
+                            self.ui.tool_output(tool_name, f"  {t}")
+                    elif isinstance(data.get("results"), list):
+                        for r in data["results"][:5]:
+                            self.ui.tool_output(tool_name, f"  {str(r)[:80]}")
+                    else:
+                        self.ui.tool_output(tool_name, f"  {summary}")
                 elif not result.success:
-                    summary = result.error[:40]
+                    summary = result.error[:40] if result.error else "Failed"
+                    self.ui.tool_output(tool_name, f"[red]{summary}[/red]")
                 self.ui.tool_complete(tool_name, success=result.success, result_summary=summary)
 
             # Log execution to database
@@ -686,6 +723,9 @@ class SecurityAgent:
             # Phase 1: Recon
             await self._run_phase(ScanPhase.RECON, targets)
 
+            # ★ Extract context from recon tool outputs for use in SCANNING prompt
+            self._extract_recon_context()
+
             # Phase 2: Scanning
             await self._run_phase(ScanPhase.SCANNING, targets)
 
@@ -755,9 +795,20 @@ class SecurityAgent:
         self.session.current_phase = phase
         await self.db.update_session_status(self.session.id, "running", phase.value)
 
-        # UI: phase update
+        # UI: phase update + register all available tools for grid
         if self.ui:
             self.ui.set_phase(phase.value)
+            # Register tools for multi-panel grid
+            if phase == ScanPhase.RECON:
+                avail = list(self._get_available_tools(self.recon_tools).keys())
+            elif phase == ScanPhase.SCANNING:
+                avail = list(self._get_available_tools(self.scanner_tools).keys())
+            elif phase == ScanPhase.EXPLOITATION:
+                avail = list(self._get_available_tools(self.exploit_tools).keys())
+            else:
+                avail = []
+            if avail:
+                self.ui.register_phase_tools(avail)
 
         self.token_tracker.check_budget()
 
@@ -812,6 +863,65 @@ class SecurityAgent:
                 f"iterations used: {len(intermediate_steps)}"
             )
 
+            # ★ AUTO-RETRY: If too many tools were skipped, re-run with explicit instructions
+            retry_count = 0
+            max_retries = 2
+            while missed_tools and retry_count < max_retries:
+                retry_count += 1
+                missed_list = ", ".join(sorted(missed_tools))
+                logger.warning(
+                    f"🔄 Phase {phase.value}: Retrying to run {len(missed_tools)} missed tools "
+                    f"(attempt {retry_count}/{max_retries}): {missed_list}"
+                )
+
+                retry_prompt = (
+                    f"CRITICAL: You DID NOT call these tools in the previous run: {missed_list}\n\n"
+                    f"You MUST call each of these tools NOW, one by one:\n"
+                )
+                for tool_name in sorted(missed_tools):
+                    retry_prompt += f"- {tool_name}: CALL THIS TOOL NOW\n"
+                retry_prompt += (
+                    f"\nTarget: {', '.join(targets)}\n"
+                    f"Do NOT summarize. Do NOT give a final answer.\n"
+                    f"START by calling the first tool in the list above.\n"
+                )
+
+                # Re-build executor for retry
+                retry_executor = self._build_agent_executor(phase)
+                if retry_executor is None:
+                    break
+
+                try:
+                    _rp = retry_prompt  # Capture by value for lambda
+                    retry_result = await _llm_retry(
+                        lambda _rp=_rp: retry_executor.ainvoke({
+                            "input": _rp,
+                            "chat_history": [],
+                        }),
+                        max_retries=2,
+                        initial_wait=15,
+                    )
+                    retry_output = retry_result.get("output", "")
+                    self.context[phase.value] += "\n" + retry_output
+
+                    # Track newly called tools
+                    retry_steps = retry_result.get("intermediate_steps", [])
+                    for step in retry_steps:
+                        if hasattr(step[0], 'tool'):
+                            tools_called.add(step[0].tool)
+
+                    # Update missed tools
+                    missed_tools = avail_names - tools_called - {"add_finding"}
+                    logger.info(
+                        f"Phase {phase.value} retry {retry_count}: "
+                        f"now called {len(tools_called)} tools | "
+                        f"still missed: {len(missed_tools)}"
+                    )
+
+                except Exception as e:
+                    logger.error(f"Phase {phase.value} retry {retry_count} failed: {e}")
+                    break
+
             self.memory.store(
                 content=output[:5000],
                 category=f"phase_result_{phase.value}",
@@ -834,6 +944,78 @@ class SecurityAgent:
         except Exception as e:
             logger.error(f"Phase {phase.value} failed after retries: {e}")
             self.context[phase.value] = f"Phase failed: {str(e)}"
+
+    def _extract_recon_context(self) -> None:
+        """Extract structured data from saved tool output JSON files to populate context for SCANNING prompt."""
+        import os
+        import glob
+
+        technologies = []
+        ports = []
+        urls_count = 0
+
+        output_dir = os.path.join(".", "data", "tool_outputs", "latest")
+        if not os.path.exists(output_dir):
+            logger.warning("No tool output directory found for recon context extraction")
+            return
+
+        for filepath in sorted(glob.glob(os.path.join(output_dir, "*.json"))):
+            try:
+                with open(filepath) as f:
+                    file_data = json.load(f)
+
+                tool_name = file_data.get("tool", "")
+                if not file_data.get("success", False):
+                    continue
+
+                data = file_data.get("data", {})
+                if not isinstance(data, dict):
+                    continue
+
+                # Technologies from whatweb/httpx
+                if tool_name in ("whatweb", "httpx"):
+                    for key in ("technologies", "tech"):
+                        techs = data.get(key, [])
+                        if isinstance(techs, list):
+                            for t in techs:
+                                if isinstance(t, dict):
+                                    technologies.append(t.get("name", str(t)))
+                                else:
+                                    technologies.append(str(t))
+
+                # Ports from naabu
+                if tool_name == "naabu":
+                    port_list = data.get("ports", [])
+                    if isinstance(port_list, list):
+                        for p in port_list:
+                            if isinstance(p, dict):
+                                ports.append(f"{p.get('host', '')}:{p.get('port', '')}")
+                            else:
+                                ports.append(str(p))
+
+                # URLs from katana
+                if tool_name == "katana":
+                    urls_count += data.get("count", 0)
+
+                # Subdomains from subfinder
+                if tool_name == "subfinder":
+                    sub_count = data.get("count", 0)
+                    if sub_count:
+                        self.context["subdomains_count"] = sub_count
+
+            except Exception as e:
+                logger.debug(f"Could not parse tool output {filepath}: {e}")
+                continue
+
+        # Deduplicate and store
+        self.context["technologies"] = ", ".join(sorted(set(technologies))) if technologies else "Unknown"
+        self.context["ports"] = ", ".join(sorted(set(ports))) if ports else "Not scanned"
+        self.context["urls_count"] = urls_count
+
+        logger.info(
+            f"Recon context extracted: technologies={self.context['technologies'][:100]}, "
+            f"ports={self.context['ports'][:100]}, urls={urls_count}"
+        )
 
     def _build_phase_prompt(self, phase: ScanPhase, targets: list[str]) -> str:
         target_str = ", ".join(targets)

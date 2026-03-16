@@ -12,6 +12,10 @@ class KatanaTool(BaseTool):
     phase = ScanPhase.RECON
 
     async def _run(self, target: str, **kwargs: Any) -> ToolResult:
+        # Ensure target has a URL scheme — katana exits instantly without it
+        if not target.startswith("http://") and not target.startswith("https://"):
+            target = f"https://{target}"
+
         cmd = ["katana", "-u", target, "-json", "-silent"]
 
         # Crawl depth — default 3
@@ -34,13 +38,15 @@ class KatanaTool(BaseTool):
         if kwargs.get("headless"):
             cmd.append("-headless")
 
-        # Scope: only crawl same domain
-        if kwargs.get("scope_domain", True):
-            cmd.append("-fs")  # field scope
+        # Scope: only crawl same root domain (rdn = root domain name)
+        cmd.extend(["-fs", kwargs.get("field_scope", "rdn")])
 
-        # JS crawling
-        if kwargs.get("js_crawl"):
+        # JS crawling — discover JS files for secret scanning
+        if kwargs.get("js_crawl", True):
             cmd.append("-jc")
+
+        # Known file discovery (JS, CSS, images, etc.)
+        cmd.extend(["-kf", "all"])
 
         # ★ Timeout per request
         cmd.extend(["-timeout", "10"])

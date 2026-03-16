@@ -58,8 +58,6 @@ def print_config_summary(config: Config) -> None:
 
     table.add_row("LLM Provider", summary["llm_provider"])
     table.add_row("LLM Model", summary["llm_model"])
-    table.add_row("Tool Timeout", f"{summary['tool_timeout']}s")
-    table.add_row("Max Scan Time", f"{summary['max_scan_time']}s")
     table.add_row("Safe Mode", "✅ Enabled" if summary["safe_mode"] else "❌ Disabled")
 
     console.print(table)
@@ -176,7 +174,19 @@ def scan(
 
     agent = SecurityAgent(config)
     try:
-        session = asyncio.run(agent.scan(list(targets), target_type, mode=mode, scan_intensity=scan_intensity))
+        # Use manual loop management to properly clean up subprocess transports
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            session = loop.run_until_complete(agent.scan(list(targets), target_type, mode=mode, scan_intensity=scan_intensity))
+        finally:
+            # Properly shut down to avoid "Event loop is closed" errors from subprocess __del__
+            try:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+                loop.run_until_complete(loop.shutdown_default_executor())
+            except Exception:
+                pass
+            loop.close()
 
         # Print summary
         console.print()

@@ -69,8 +69,7 @@ class BaseTool(ABC):
     description: str = "Base security tool"
     phase: ScanPhase = ScanPhase.RECON
 
-    def __init__(self, timeout: int = 300, max_retries: int = 2):
-        self.timeout = timeout
+    def __init__(self, max_retries: int = 2, **kwargs):
         self.max_retries = max_retries
 
     @abstractmethod
@@ -79,15 +78,16 @@ class BaseTool(ABC):
         ...
 
     async def run(self, **kwargs: Any) -> ToolResult:
-        """Execute the tool with timeout, error handling, and retry logic."""
+        """Execute the tool with error handling and retry logic.
+        
+        No hard timeout here — run_command() handles idle-based
+        completion detection (kills only when process stops producing output).
+        """
         last_result = None
         for attempt in range(1, self.max_retries + 1):
             start = time.time()
             try:
-                result = await asyncio.wait_for(
-                    self._run(**kwargs),
-                    timeout=self.timeout,
-                )
+                result = await self._run(**kwargs)
                 result.execution_time = time.time() - start
                 self._save_result(result)
                 if result.success:
@@ -99,15 +99,6 @@ class BaseTool(ABC):
                 if attempt < self.max_retries:
                     logger.warning(f"Tool {self.name} attempt {attempt} failed: {result.error}. Retrying...")
                     await asyncio.sleep(1)
-            except asyncio.TimeoutError:
-                last_result = ToolResult(
-                    tool_name=self.name,
-                    success=False,
-                    error=f"Tool timed out after {self.timeout}s (attempt {attempt}/{self.max_retries})",
-                    execution_time=time.time() - start,
-                )
-                if attempt < self.max_retries:
-                    logger.warning(f"Tool {self.name} timed out. Retrying...")
             except Exception as e:
                 logger.exception(f"Tool {self.name} failed (attempt {attempt})")
                 last_result = ToolResult(
@@ -151,22 +142,28 @@ class BaseTool(ABC):
 
 async def run_command(
     cmd: list[str],
-    timeout: int = 300,
+    timeout: int = 0,
     cwd: str | None = None,
     env: dict[str, str] | None = None,
     output_file: str | None = None,
+    idle_timeout: int = 120,
+    on_output: callable | None = None,
 ) -> tuple[int, str, str]:
     """
     Run a shell command asynchronously and return (returncode, stdout, stderr).
 
-    Uses a two-phase timeout strategy:
-    1. Wait up to `timeout` seconds for the process to complete.
-    2. If it times out, check if the process is still producing output.
-       Give it an extra grace period (60s) before killing.
+    Completion detection: process runs indefinitely as long as it produces output.
+    Terminated only when:
+    - Process exits on its own (natural completion)
+    - No new output for `idle_timeout` seconds (default 120s) → assumed done
 
-    If `output_file` is provided, stdout is ALSO written to that file
-    so results are preserved even if the process is killed.
+    No hard timeout — if the tool is working and producing output, it keeps running.
+
+    If `output_file` is provided, stdout is ALSO written to that file.
+    If `on_output` is provided, called with each output line for real-time streaming.
     """
+    import time as _time
+
     # Build env with ~/go/bin at the front of PATH
     run_env = env or os.environ.copy()
     go_bin = os.path.expanduser("~/go/bin")
@@ -191,46 +188,76 @@ async def run_command(
             env=run_env,
         )
 
-        try:
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                proc.communicate(),
-                timeout=timeout,
-            )
-        except asyncio.TimeoutError:
-            # ─── Grace period: process may be finishing, wait a bit more ──
-            logger.warning(
-                f"Command '{cmd[0]}' exceeded {timeout}s timeout. "
-                f"Granting 60s grace period before terminating..."
-            )
-            try:
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    proc.communicate(),
-                    timeout=60,
-                )
-                logger.info(f"Command '{cmd[0]}' finished during grace period.")
-            except asyncio.TimeoutError:
-                # Truly timed out — kill it
-                logger.warning(f"Command '{cmd[0]}' still running after grace period. Killing.")
-                proc.kill()
-                # Collect any partial output
+        stdout_lines: list[str] = []
+        stderr_lines: list[str] = []
+        last_output_time = _time.monotonic()
+
+        async def _read_stream(stream, target_list, is_stdout=True):
+            nonlocal last_output_time
+            while True:
                 try:
-                    stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                        proc.communicate(), timeout=5
-                    )
-                except Exception:
-                    stdout_bytes, stderr_bytes = b"", b""
+                    line = await asyncio.wait_for(stream.readline(), timeout=5)
+                except asyncio.TimeoutError:
+                    # No data in 5s — check if process exited
+                    if proc.returncode is not None:
+                        break
+                    continue
 
-                stdout_str = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
-                stderr_str = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+                if not line:
+                    break  # EOF — stream closed
 
-                # Save partial output if output_file specified
-                if output_file and stdout_str:
-                    _write_output_file(output_file, stdout_str)
+                decoded = line.decode("utf-8", errors="replace").rstrip("\n")
+                target_list.append(decoded)
+                last_output_time = _time.monotonic()
 
-                return -1, stdout_str, f"Command timed out after {timeout + 60}s (partial output captured). {stderr_str}"
+                if on_output and is_stdout and decoded.strip():
+                    try:
+                        on_output(decoded)
+                    except Exception:
+                        pass
 
-        stdout_str = stdout_bytes.decode("utf-8", errors="replace")
-        stderr_str = stderr_bytes.decode("utf-8", errors="replace")
+        # Read stdout and stderr concurrently
+        read_tasks = [
+            asyncio.create_task(_read_stream(proc.stdout, stdout_lines, is_stdout=True)),
+            asyncio.create_task(_read_stream(proc.stderr, stderr_lines, is_stdout=False)),
+        ]
+
+        # Monitor: only check idle output — no hard timeout
+        while not all(t.done() for t in read_tasks):
+            await asyncio.sleep(2)
+
+            # Check if process finished naturally
+            if proc.returncode is not None:
+                # Process exited — drain remaining buffered output
+                try:
+                    await asyncio.wait_for(asyncio.gather(*read_tasks), timeout=5)
+                except asyncio.TimeoutError:
+                    pass
+                break
+
+            # Idle check — no output for idle_timeout seconds
+            idle_elapsed = _time.monotonic() - last_output_time
+            if idle_elapsed > idle_timeout:
+                logger.info(
+                    f"Command '{cmd[0]}' idle for {idle_timeout}s (no new output). "
+                    f"Assuming finished. Collected {len(stdout_lines)} output lines."
+                )
+                proc.terminate()
+                await asyncio.sleep(2)
+                if proc.returncode is None:
+                    proc.kill()
+                for t in read_tasks:
+                    t.cancel()
+                break
+
+        # Wait for process to fully exit
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            proc.kill()
+
+        stdout_str = "\n".join(stdout_lines)
+        stderr_str = "\n".join(stderr_lines)
 
         # Save output to file if specified
         if output_file and stdout_str:
