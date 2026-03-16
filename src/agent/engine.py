@@ -91,6 +91,53 @@ logger = logging.getLogger(__name__)
 # Token Budget Tracking
 # ─────────────────────────────────────────────────────────────
 
+# Retryable error patterns (Gemini 503, rate limits, overload)
+_RETRYABLE_PATTERNS = (
+    "503", "429", "overloaded", "high demand",
+    "rate limit", "quota", "resource exhausted",
+    "temporarily unavailable", "try again",
+)
+
+
+def _is_retryable_error(error: Exception) -> bool:
+    """Check if an error is a transient API error worth retrying."""
+    error_str = str(error).lower()
+    return any(p in error_str for p in _RETRYABLE_PATTERNS)
+
+
+async def _llm_retry(coro_factory, max_retries: int = 3, initial_wait: int = 30):
+    """
+    Retry an async LLM call with exponential backoff.
+
+    Args:
+        coro_factory: A callable that returns a new coroutine each time (lambda: llm.ainvoke(...))
+        max_retries: Maximum retry attempts
+        initial_wait: Seconds to wait before first retry (doubles each retry)
+
+    Returns:
+        The result of the successful coroutine
+
+    Raises:
+        The last exception if all retries are exhausted
+    """
+    last_error = None
+    for attempt in range(max_retries + 1):
+        try:
+            return await coro_factory()
+        except Exception as e:
+            last_error = e
+            if attempt < max_retries and _is_retryable_error(e):
+                wait_time = initial_wait * (2 ** attempt)
+                logger.warning(
+                    f"⏳ LLM API error (attempt {attempt + 1}/{max_retries + 1}): {str(e)[:100]}. "
+                    f"Retrying in {wait_time}s..."
+                )
+                await asyncio.sleep(wait_time)
+            else:
+                raise
+    raise last_error
+
+
 class TokenBudgetExhausted(Exception):
     """Raised when the agent runs out of token budget."""
     pass
@@ -160,106 +207,111 @@ class SubfinderInput(GeminiSafeModel):
     target: str = Field(description="Domain to enumerate subdomains for")
     sources: str = Field(default="", description="Comma-separated list of sources")
 
-class NaabuInput(BaseModel):
+class NaabuInput(GeminiSafeModel):
     target: str = Field(description="Host or IP to scan ports on")
     ports: str = Field(default="", description="Ports to scan, e.g. '80,443' or '1-10000'")
     top_ports: str = Field(default="100", description="Number of top ports to scan")
 
-class KatanaInput(BaseModel):
+class KatanaInput(GeminiSafeModel):
     target: str = Field(description="URL to crawl")
     depth: int = Field(default=3, description="Crawl depth")
-    js_crawl: bool = Field(default=False, description="Enable JavaScript crawling")
+    js_crawl: bool = Field(default=True, description="Enable JavaScript source crawling")
     headless: bool = Field(default=False, description="Use headless browser")
 
-class HttpxInput(BaseModel):
-    target: str = Field(description="Host or URL to probe")
+class HttpxInput(GeminiSafeModel):
+    target: str = Field(description="Domain/URL/file for HTTP probing")
+    tech_detect: bool = Field(default=True, description="Enable technology detection")
+    status_code: bool = Field(default=True, description="Show status codes")
+    follow_redirects: bool = Field(default=True, description="Follow redirects")
 
-class TheHarvesterInput(BaseModel):
-    target: str = Field(description="Domain for OSINT gathering")
-    sources: str = Field(default="all", description="OSINT sources to use")
+class TheHarvesterInput(GeminiSafeModel):
+    target: str = Field(description="Domain to gather information on")
+    data_source: str = Field(default="all", description="Data source: all, bing, google, linkedin, etc.")
+    limit: int = Field(default=200, description="Limit results")
 
-class AmassInput(BaseModel):
-    target: str = Field(description="Domain for comprehensive subdomain enumeration")
-    passive: bool = Field(default=True, description="Passive-only mode (safer)")
+class AmassInput(GeminiSafeModel):
+    target: str = Field(description="Domain for subdomain enumeration")
+    mode: str = Field(default="passive", description="Mode: passive or active")
 
-class WhatWebInput(BaseModel):
-    target: str = Field(description="URL to fingerprint technologies")
+class WhatWebInput(GeminiSafeModel):
+    target: str = Field(description="URL or domain for tech fingerprinting")
     aggression: int = Field(default=1, description="Aggression level: 1=stealthy, 3=aggressive")
 
-class Wafw00fInput(BaseModel):
+class Wafw00fInput(GeminiSafeModel):
     target: str = Field(description="URL to detect WAF")
 
-class DnsxInput(BaseModel):
+class DnsxInput(GeminiSafeModel):
     target: str = Field(description="Domain or list of domains for DNS resolution")
     record_type: str = Field(default="A", description="DNS record type: A, AAAA, CNAME, MX, NS, TXT, SOA, PTR")
     wordlist: str = Field(default="", description="Wordlist for subdomain brute-force")
 
-class NiktoInput(BaseModel):
+class NiktoInput(GeminiSafeModel):
     target: str = Field(description="URL to scan with Nikto")
     tuning: str = Field(default="", description="Scan tuning: 1=file upload, 2=misconfig, 3=info, 4=injection, etc.")
 
-class TestSSLInput(BaseModel):
+class TestSSLInput(GeminiSafeModel):
     target: str = Field(description="Host:port to test SSL/TLS (e.g. example.com:443)")
     checks: str = Field(default="", description="Specific checks: --protocols, --ciphers, --vulnerabilities")
 
-class NucleiInput(BaseModel):
+class NucleiInput(GeminiSafeModel):
     target: str = Field(description="URL to scan for vulnerabilities")
     tags: str = Field(default="", description="Template tags, e.g. 'cve,sqli,xss'")
     severity: str = Field(default="", description="Severity filter: critical,high,medium,low,info")
     rate_limit: int = Field(default=0, description="Requests per second (0=default)")
 
-class FfufInput(BaseModel):
+class FfufInput(GeminiSafeModel):
     target: str = Field(description="URL with FUZZ keyword, e.g. http://example.com/FUZZ")
     wordlist: str = Field(default="/usr/share/wordlists/common.txt", description="Wordlist path")
     extensions: str = Field(default="", description="File extensions, e.g. '.php,.html'")
     filter_codes: str = Field(default="404", description="HTTP codes to filter out")
     filter_size: str = Field(default="", description="Response sizes to filter")
 
-class GobusterInput(BaseModel):
+class GobusterInput(GeminiSafeModel):
     target: str = Field(description="URL or domain to brute-force")
     mode: str = Field(default="dir", description="Mode: dir, dns, vhost")
     wordlist: str = Field(default="/usr/share/wordlists/common.txt", description="Wordlist path")
     extensions: str = Field(default="", description="File extensions for dir mode")
 
-class ZAPInput(BaseModel):
+class ZAPInput(GeminiSafeModel):
     target: str = Field(description="URL to scan with ZAP")
     scan_type: str = Field(default="spider_and_active", description="Type: spider, active, spider_and_active")
 
-class SecretScannerInput(BaseModel):
-    urls: str = Field(description="Comma-separated list of URLs to scan for leaked credentials in JS/CSS/HTML.")
+class SecretScannerInput(GeminiSafeModel):
+    target: str = Field(default="", description="Domain or URL to auto-crawl and scan for leaked credentials in JS/CSS/HTML files.")
+    urls: str = Field(default="", description="Comma-separated list of specific URLs to scan. If empty, will auto-crawl the target.")
 
-class AcunetixInput(BaseModel):
+class AcunetixInput(GeminiSafeModel):
     target: str = Field(description="URL to scan with Acunetix")
     profile: str = Field(default="full", description="Scan profile: full, high_risk, xss, sqli")
 
-class SQLMapInput(BaseModel):
+class SQLMapInput(GeminiSafeModel):
     target: str = Field(description="URL with parameters, e.g. http://example.com/page?id=1")
     level: int = Field(default=1, description="Detection level 1-5")
     risk: int = Field(default=1, description="Risk level 1-3")
     dbs: bool = Field(default=True, description="Enumerate databases")
     param: str = Field(default="", description="Specific parameter to test")
 
-class CommixInput(BaseModel):
+class CommixInput(GeminiSafeModel):
     target: str = Field(description="URL to test for command injection")
     param: str = Field(default="", description="Specific parameter to test")
 
-class SearchSploitInput(BaseModel):
+class SearchSploitInput(GeminiSafeModel):
     query: str = Field(description="Search query, e.g. 'Apache 2.4.49'")
 
-class MetasploitInput(BaseModel):
+class MetasploitInput(GeminiSafeModel):
     target: str = Field(description="Target IP/host")
     action: str = Field(default="search", description="Action: search, check, exploit (exploit requires CVE reference)")
     search_query: str = Field(default="", description="Search query for modules (must include CVE for exploit action)")
     module: str = Field(default="", description="Exploit module path (must reference a CVE)")
 
-class CustomExploitInput(BaseModel):
+class CustomExploitInput(GeminiSafeModel):
     """Schema for AI-generated Python exploit code execution."""
     target: str = Field(description="Target URL/host to exploit")
     exploit_code: str = Field(description="Python exploit code to execute in sandbox")
     description: str = Field(default="", description="Brief description of what this exploit does")
     vuln_type: str = Field(default="", description="Vulnerability type: xss, sqli, ssrf, rce, lfi, redirect, crlf, etc.")
 
-class AddFindingInput(BaseModel):
+class AddFindingInput(GeminiSafeModel):
     """Schema for the add_finding LangChain tool."""
     title: str = Field(description="Finding title (e.g. 'SQL Injection in login page')")
     severity: str = Field(description="Severity: critical, high, medium, low, info")
@@ -570,13 +622,17 @@ class SecurityAgent:
 
         agent = create_tool_calling_agent(self.llm, tools, prompt)
 
+        # Use user-selected scan intensity for max_iterations
+        max_iter = getattr(self, 'scan_intensity', 20)
+
         return AgentExecutor(
             agent=agent,
             tools=tools,
-            verbose=True,
-            max_iterations=15,
+            verbose=False,
+            max_iterations=max_iter,
             handle_parsing_errors=True,
             return_intermediate_steps=True,
+            early_stopping_method="force",
         )
 
     # ─── Lifecycle ───────────────────────────────────────────
@@ -603,8 +659,10 @@ class SecurityAgent:
         targets: list[str],
         target_type: str = "domain",
         mode: str = "normal",
+        scan_intensity: int = 20,
     ) -> ScanSession:
         self.scan_mode = mode
+        self.scan_intensity = scan_intensity
         await self.initialize()
 
         try:
@@ -712,13 +770,47 @@ class SecurityAgent:
         self.token_tracker.track(prompt_text)
 
         try:
-            result = await executor.ainvoke({
-                "input": prompt_text,
-                "chat_history": [],
-            })
+            result = await _llm_retry(
+                lambda: executor.ainvoke({
+                    "input": prompt_text,
+                    "chat_history": [],
+                }),
+                max_retries=3,
+                initial_wait=30,
+            )
             output = result.get("output", "")
             self.context[phase.value] = output
             self.token_tracker.track(output)
+
+            # ★ Track which tools were actually called in this phase
+            intermediate_steps = result.get("intermediate_steps", [])
+            tools_called = set()
+            for step in intermediate_steps:
+                if hasattr(step[0], 'tool'):
+                    tools_called.add(step[0].tool)
+            
+            # Get available tools for comparison
+            if phase == ScanPhase.RECON:
+                avail_names = set(self._get_available_tools(self.recon_tools).keys())
+            elif phase == ScanPhase.SCANNING:
+                avail_names = set(self._get_available_tools(self.scanner_tools).keys())
+            elif phase == ScanPhase.EXPLOITATION:
+                avail_names = set(self._get_available_tools(self.exploit_tools).keys())
+            else:
+                avail_names = set()
+
+            missed_tools = avail_names - tools_called - {"add_finding"}
+            if missed_tools:
+                logger.warning(
+                    f"⚠️ Phase {phase.value}: {len(missed_tools)} tools NOT called: "
+                    f"{', '.join(sorted(missed_tools))}"
+                )
+            logger.info(
+                f"Phase {phase.value}: called {len(tools_called)} tools "
+                f"({', '.join(sorted(tools_called))}) | "
+                f"available: {len(avail_names)} | "
+                f"iterations used: {len(intermediate_steps)}"
+            )
 
             self.memory.store(
                 content=output[:5000],
@@ -740,7 +832,7 @@ class SecurityAgent:
         except TokenBudgetExhausted:
             raise
         except Exception as e:
-            logger.error(f"Phase {phase.value} failed: {e}")
+            logger.error(f"Phase {phase.value} failed after retries: {e}")
             self.context[phase.value] = f"Phase failed: {str(e)}"
 
     def _build_phase_prompt(self, phase: ScanPhase, targets: list[str]) -> str:
@@ -772,7 +864,7 @@ class SecurityAgent:
         missing = [n for n in all_tools if n not in available_tools]
         if missing:
             tool_inventory += f"\n⚠️ {len(missing)} tools not installed: {', '.join(missing)}\n"
-        tool_inventory += "\nYou MUST use only the tools marked ✅. Choose the most effective tools for this target.\n"
+        tool_inventory += "\n⚠️ You MUST call EVERY tool marked ✅. Do NOT stop after 1-2 tools. Do NOT finish a phase without running ALL available tools.\n"
 
         skills_text = get_skills_prompt(phase.value, available_tools, scan_mode=self.scan_mode)
         mode_text = get_scan_mode_guidance(self.scan_mode)
@@ -860,10 +952,14 @@ class SecurityAgent:
         )
         self.token_tracker.track(prompt)
 
-        response = await self.llm.ainvoke([
-            SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=prompt),
-        ])
+        response = await _llm_retry(
+            lambda: self.llm.ainvoke([
+                SystemMessage(content=SYSTEM_PROMPT),
+                HumanMessage(content=prompt),
+            ]),
+            max_retries=3,
+            initial_wait=30,
+        )
 
         analysis_text = response.content if hasattr(response, "content") else str(response)
         self.context["analysis"] = analysis_text
@@ -965,10 +1061,14 @@ class SecurityAgent:
                 )
                 self.token_tracker.track(prompt)
 
-                response = await self.llm.ainvoke([
-                    SystemMessage(content="You are an expert security analyst."),
-                    HumanMessage(content=prompt),
-                ])
+                response = await _llm_retry(
+                    lambda p=prompt: self.llm.ainvoke([
+                        SystemMessage(content="You are an expert security analyst."),
+                        HumanMessage(content=p),
+                    ]),
+                    max_retries=2,
+                    initial_wait=15,
+                )
                 enrichment_text = response.content if hasattr(response, "content") else str(response)
                 self.token_tracker.track(enrichment_text)
 

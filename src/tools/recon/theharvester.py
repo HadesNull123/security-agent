@@ -1,7 +1,14 @@
-"""theHarvester - OSINT tool for email, subdomain, IP discovery."""
+"""theHarvester - OSINT tool for email, subdomain, IP discovery.
+
+Handles multiple binary name variations since pip may install
+as 'theHarvester', 'theharvester', or only as a Python module.
+"""
 
 from __future__ import annotations
+
+import shutil
 from typing import Any
+
 from src.core.config import ScanPhase
 from src.tools import BaseTool, ToolResult, run_command
 
@@ -11,8 +18,34 @@ class TheHarvesterTool(BaseTool):
     description = "Gather emails, subdomains, IPs, and URLs using multiple OSINT sources"
     phase = ScanPhase.RECON
 
+    def _get_harvester_cmd(self) -> list[str]:
+        """Find the correct way to invoke theHarvester."""
+        # Try binary names first
+        for binary in ["theHarvester", "theharvester", "theHarvester.py"]:
+            if shutil.which(binary):
+                return [binary]
+        # Fallback: invoke as Python module
+        return ["python3", "-m", "theHarvester"]
+
+    def is_available(self) -> bool:
+        """Check if theHarvester is available (binary or Python module)."""
+        # Check binary names
+        for binary in ["theHarvester", "theharvester", "theHarvester.py"]:
+            if shutil.which(binary):
+                return True
+        # Check if importable as Python module
+        try:
+            import importlib
+            importlib.import_module("theHarvester")
+            return True
+        except ImportError:
+            return False
+
     async def _run(self, target: str, **kwargs: Any) -> ToolResult:
-        cmd = ["theHarvester", "-d", target, "-b", kwargs.get("sources", "all")]
+        cmd = self._get_harvester_cmd() + [
+            "-d", target,
+            "-b", kwargs.get("sources", "anubis,hackertarget,crtsh,urlscan"),
+        ]
 
         # Limit results
         if limit := kwargs.get("limit"):
@@ -65,6 +98,6 @@ class TheHarvesterTool(BaseTool):
                 "hosts": hosts,
                 "ips": ips,
             },
-            raw_output=stdout,
+            raw_output=stdout[:10000],
             command_used=" ".join(cmd),
         )

@@ -18,8 +18,13 @@ IMPORTANT RULES:
 6. You MUST prioritize findings by severity (Critical > High > Medium > Low > Info).
 7. For exploitation, always start with the least intrusive approach.
 8. When in doubt about a finding's severity, classify it higher rather than lower.
-9. Be EFFICIENT with tool calls — avoid redundant scans.
+9. You MUST call EVERY available tool in each phase. Do NOT skip any tool. Do NOT stop early.
 10. Use the add_finding tool to register each confirmed vulnerability.
+11. Do NOT give a final text answer until you have called ALL available tools for this phase.
+12. Each tool provides unique value — there are NO redundant tools. Run them ALL.
+
+CRITICAL: You are NOT allowed to finish a phase until every tool marked ✅ has been called at least once.
+If you still have uncalled tools, call them NOW instead of summarizing.
 
 Your responses should be structured and include:
 - What you found
@@ -27,54 +32,65 @@ Your responses should be structured and include:
 - Why you chose that approach
 """
 
-RECON_PROMPT = """You are in the RECONNAISSANCE phase. Your goal is to gather information about the target.
+RECON_PROMPT = """You are in the RECONNAISSANCE phase. Your goal is to gather COMPREHENSIVE information about the target.
 
 Target: {target}
 
-Strategy:
-1. Start with subdomain enumeration (subfinder)
-2. Probe discovered hosts to detect technologies (httpx)
-3. Port scan interesting hosts (naabu)
-4. Crawl web applications to discover endpoints (katana)
-5. Optionally gather OSINT data (theHarvester, amass)
-6. Detect WAFs if scanning web targets (wafw00f)
-7. Fingerprint web technologies in detail (whatweb)
+## ⚠️ CRITICAL: You MUST run ALL available tools listed above. Do NOT stop after 1-2 tools.
+
+Strategy — run EVERY tool in this order:
+1. subfinder — Subdomain enumeration (MUST RUN)
+2. httpx — Probe discovered hosts for technologies (MUST RUN)
+3. naabu — Port scan (MUST RUN)
+4. katana — Crawl web applications to discover endpoints (MUST RUN)
+5. whatweb — Fingerprint web technologies (MUST RUN)
+6. wafw00f — Detect WAFs (MUST RUN)
+7. dnsx — DNS resolution (MUST RUN)
+8. amass — Additional subdomain enumeration (run if available)
+9. theHarvester — OSINT data (run if available)
 
 Refer to the Available Tool Skills section above for detailed guidance on each tool.
-Based on the target type and what you know, decide which tools to run and in what order.
-Analyze each tool's output before deciding the next step.
+You MUST call EVERY tool that is marked ✅ available. Do NOT skip any.
+Do NOT finish this phase until every available tool has been called at least once.
+Analyze each tool's output before deciding parameters for the next tool.
 
 Previous results: {context}
 
-What tools should you run next and with what parameters?
+Start by running the first available tool now.
 """
 
-SCANNING_PROMPT = """You are in the SCANNING phase. Your goal is to identify vulnerabilities.
+SCANNING_PROMPT = """You are in the SCANNING phase. Your goal is to identify ALL vulnerabilities.
 
 Target: {target}
 Reconnaissance Results: {recon_summary}
 
-Strategy:
-1. Based on the tech stack discovered in recon, select appropriate nuclei templates/tags
-2. Fuzz for hidden directories and files with ffuf or gobuster
-3. Use secret_scanner to find leaked credentials (API keys, passwords, tokens) in discovered JS, CSS, and HTML urls.
-4. If ZAP/Acunetix are available, launch a comprehensive scan
-5. Check for CORS misconfigurations (nuclei --tags cors)
-6. Test for SSRF and SSTI on URL/template parameters (nuclei --tags ssrf,ssti)
-7. If JWT tokens detected, test for algorithm confusion and weak secrets (nuclei --tags jwt)
-8. Check for cloud misconfigurations and exposed S3 buckets (nuclei --tags cloud,aws,s3)
-9. Test login/auth endpoints for rate limiting and default credentials
-10. Check for sensitive file exposure (.env, .git, backup.sql, phpinfo) via nuclei + ffuf
-11. Detect exposed Git/SVN repos and source maps (nuclei --tags git,svn,exposure)
-12. Look for information disclosure (debug pages, stack traces, directory listing)
-13. Look for: SQLi, XSS, SSRF, SSTI, LFI/RFI, IDOR, CORS, JWT flaws, auth issues, misconfigurations
+## ⚠️ CRITICAL: You MUST run ALL available scanning tools. Do NOT stop after 1-2 tools.
+
+Strategy — run EVERY scanning tool:
+1. nuclei — Vulnerability scan with appropriate severity and tags (MUST RUN)
+2. ffuf — Directory/file brute-force (MUST RUN)
+3. gobuster — Additional brute-force (MUST RUN)
+4. nikto — Web server vulnerability scan (MUST RUN)
+5. testssl — SSL/TLS audit (MUST RUN)
+6. secret_scanner — Scan JS/CSS/HTML for leaked credentials (MUST RUN)
+7. acunetix — Full scan via API (MUST RUN if configured/available)
+8. Use add_finding after EACH tool to register vulnerabilities
+
+Additional checks to perform:
+- CORS misconfigurations (nuclei --tags cors)
+- SSRF and SSTI on URL/template parameters (nuclei --tags ssrf,ssti)
+- JWT flaws (nuclei --tags jwt)
+- Cloud misconfigurations (nuclei --tags cloud,aws,s3)
+- Sensitive file exposure (.env, .git, backup.sql, phpinfo)
+- Look for: SQLi, XSS, SSRF, SSTI, LFI/RFI, IDOR, CORS, auth issues
 
 Technologies detected: {technologies}
 Open ports: {ports}
 URLs discovered: {urls_count}
 
-IMPORTANT: After each scanning tool completes, use the `add_finding` tool to register
-any vulnerabilities discovered. Extract: title, severity, affected URL, description, evidence.
+You MUST call EVERY tool that is marked ✅ available. Do NOT skip any.
+Do NOT finish this phase until every available scanning tool has been called.
+After each tool completes, use `add_finding` to register any vulnerabilities discovered.
 """
 
 ANALYSIS_PROMPT = """You are in the ANALYSIS phase. You are a senior security analyst. Analyze ALL tool outputs comprehensively.

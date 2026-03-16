@@ -40,7 +40,7 @@ TOOL_REGISTRY: dict[str, ToolInfo] = {
         name="naabu",
         binary_name="naabu",
         install_method="go",
-        install_command="go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest",
+        install_command="sudo apt-get install -y libpcap-dev && go install -v github.com/projectdiscovery/naabu/v2/cmd/naabu@latest",
         description="Fast port scanner",
     ),
     "katana": ToolInfo(
@@ -61,7 +61,13 @@ TOOL_REGISTRY: dict[str, ToolInfo] = {
         name="theHarvester",
         binary_name="theHarvester",
         install_method="pip",
-        install_command="pip install --break-system-packages theHarvester",
+        install_command=(
+            "rm -rf /tmp/theHarvester && "
+            "git clone https://github.com/laramies/theHarvester /tmp/theHarvester && "
+            "cd /tmp/theHarvester && "
+            "pipx install . && "
+            "pipx ensurepath"
+        ),
         description="OSINT email/subdomain/IP gathering",
     ),
     "amass": ToolInfo(
@@ -152,6 +158,13 @@ TOOL_REGISTRY: dict[str, ToolInfo] = {
         install_command="git clone --depth 1 https://github.com/drwetter/testssl.sh.git ~/.local/share/testssl && mkdir -p ~/.local/bin && ln -sf ~/.local/share/testssl/testssl.sh ~/.local/bin/testssl.sh",
         description="SSL/TLS configuration testing tool",
     ),
+    "secret_scanner": ToolInfo(
+        name="secret_scanner",
+        binary_name="__builtin__",
+        install_method="builtin",
+        install_command="",
+        description="Built-in credential leak scanner (pure Python, no install needed)",
+    ),
 }
 
 
@@ -176,12 +189,18 @@ class ToolInstaller:
     def is_tool_installed(self, tool_name: str) -> bool:
         """Check if a tool binary exists in PATH.
 
-        Special handling for Go tools that conflict with Python packages
-        (e.g. 'httpx' — Python httpx library installs a CLI with the same name).
+        Special handling for:
+        - Go tools that conflict with Python packages (e.g. 'httpx')
+        - Builtin Python tools (e.g. 'secret_scanner') — always available
+        - theHarvester — pip may install as 'theHarvester' or 'theharvester'
         """
         info = TOOL_REGISTRY.get(tool_name)
         if not info:
             return shutil.which(tool_name) is not None
+
+        # Builtin tools are always available (pure Python, no external binary)
+        if info.install_method == "builtin":
+            return True
 
         # For Go-installed tools, check ~/go/bin first (authoritative location)
         if info.install_method == "go":
@@ -197,6 +216,19 @@ class ToolInstaller:
                     return True
                 return False  # Python httpx found, not Go httpx
 
+        # theHarvester: pip may install as different binary names or only as Python module
+        if tool_name == "theHarvester":
+            for binary in ("theHarvester", "theharvester", "theHarvester.py"):
+                if shutil.which(binary):
+                    return True
+            # Check if importable as Python module
+            try:
+                import importlib
+                importlib.import_module("theHarvester")
+                return True
+            except ImportError:
+                return False
+
         return shutil.which(info.binary_name) is not None
 
     def get_missing_tools(self, tool_names: list[str]) -> list[str]:
@@ -210,6 +242,7 @@ class ToolInstaller:
             "pip": shutil.which("pip") is not None or shutil.which("pip3") is not None,
             "apt": shutil.which("apt-get") is not None,
             "manual": shutil.which("git") is not None,  # manual installs use git clone
+            "builtin": True,  # Always available
         }
 
     async def install_tool(self, tool_name: str) -> tuple[bool, str]:
@@ -225,6 +258,10 @@ class ToolInstaller:
 
         if self.is_tool_installed(tool_name):
             return True, f"{tool_name} is already installed."
+
+        # Builtin tools don't need installation
+        if info.install_method == "builtin":
+            return True, f"{tool_name} is a built-in Python tool (always available)."
 
         prereqs = self.check_prerequisites()
         if not prereqs.get(info.install_method, False):
@@ -250,6 +287,12 @@ class ToolInstaller:
                     go_bin = os.path.expanduser("~/go/bin")
                     if go_bin not in os.environ.get("PATH", ""):
                         os.environ["PATH"] = f"{go_bin}:{os.environ.get('PATH', '')}"
+
+                # For pip tools, ensure ~/.local/bin is in PATH (macOS/Linux)
+                if info.install_method == "pip":
+                    local_bin = os.path.expanduser("~/.local/bin")
+                    if local_bin not in os.environ.get("PATH", ""):
+                        os.environ["PATH"] = f"{local_bin}:{os.environ.get('PATH', '')}"
 
                 if self.is_tool_installed(tool_name):
                     logger.info(f"✅ {tool_name} installed successfully.")

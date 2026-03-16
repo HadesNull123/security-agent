@@ -127,6 +127,16 @@ def scan(
 
     print_config_summary(config)
 
+    # Show external scanner status
+    if config.acunetix.api_url and config.acunetix.api_key:
+        console.print("[green]✅ Acunetix: Configured[/green]")
+    else:
+        console.print("[yellow]⚠️  Acunetix: Not configured (set ACUNETIX_API_URL and ACUNETIX_API_KEY in .env)[/yellow]")
+    if config.zap.api_key:
+        console.print("[green]✅ OWASP ZAP: Configured[/green]")
+    else:
+        console.print("[dim]ℹ️  OWASP ZAP: Not configured (optional)[/dim]")
+
     # Mode description
     mode_desc = {
         "quick": "⚡ QUICK - Fast link-level scan (recon + critical vulns only)",
@@ -141,6 +151,23 @@ def scan(
         border_style="red",
     ))
 
+    # ★ Ask user for scan intensity (affects max_iterations)
+    console.print("\n[bold cyan]🔄 Select Scan Intensity:[/bold cyan]")
+    console.print("  [1] ⚡ Light (fast, ~10 tool calls per phase)")
+    console.print("  [2] 🔍 Medium (balanced, ~20 tool calls per phase)")
+    console.print("  [3] 🔬 Heavy (thorough, ~30 tool calls per phase)")
+    console.print("  [4] 💀 Maximum (deepest scan, ~50 tool calls per phase)")
+
+    intensity_map = {"1": 10, "2": 20, "3": 30, "4": 50}
+    intensity_labels = {"1": "Light", "2": "Medium", "3": "Heavy", "4": "Maximum"}
+    intensity_choice = click.prompt(
+        "Select",
+        type=click.Choice(["1", "2", "3", "4"]),
+        default="2",
+    )
+    scan_intensity = intensity_map[intensity_choice]
+    console.print(f"  → Selected: [bold green]{intensity_labels[intensity_choice]}[/bold green] ({scan_intensity} iterations/phase)\n")
+
     if not click.confirm("\n⚠️  Proceed with the scan?", default=True):
         console.print("[yellow]Scan cancelled.[/yellow]")
         return
@@ -149,7 +176,7 @@ def scan(
 
     agent = SecurityAgent(config)
     try:
-        session = asyncio.run(agent.scan(list(targets), target_type, mode=mode))
+        session = asyncio.run(agent.scan(list(targets), target_type, mode=mode, scan_intensity=scan_intensity))
 
         # Print summary
         console.print()
