@@ -139,6 +139,36 @@ class AgentConfig(BaseSettings):
         Path(self.database_path).parent.mkdir(parents=True, exist_ok=True)
 
 
+def _is_placeholder(value: str) -> bool:
+    """
+    Check whether an env var value is a placeholder / not actually configured.
+
+    Returns True (= should be ignored) for:
+    - Empty strings or whitespace-only
+    - Values starting with 'your-' (e.g. 'your-google-api-key')
+    - Common placeholder patterns like 'changeme', 'xxx', 'TODO', 'REPLACE_ME'
+    """
+    if not value or not value.strip():
+        return True
+
+    v = value.strip().lower()
+
+    # Explicit placeholder prefixes/patterns
+    placeholder_patterns = (
+        "your-", "your_", "enter-", "enter_",
+        "replace", "changeme", "change-me", "change_me",
+        "xxx", "todo", "fixme", "placeholder",
+        "put-your", "put_your", "insert-", "insert_",
+        "<", "{", "example",
+    )
+
+    for p in placeholder_patterns:
+        if v.startswith(p):
+            return True
+
+    return False
+
+
 class Config:
     """Root configuration container. Aggregates all sub-configurations."""
 
@@ -157,8 +187,36 @@ class Config:
         self.shodan = ShodanConfig()
         self.metasploit = MetasploitConfig()
 
+        # Clear placeholder / empty values so they're treated as "not configured"
+        self._sanitize_configs()
+
         # Validate LLM API key
         self._validate_llm_config()
+
+    def _sanitize_configs(self) -> None:
+        """
+        Clear placeholder values loaded from .env so they're treated as not configured.
+
+        Handles cases like:
+          ZAP_API_KEY=           → empty string → cleared
+          ACUNETIX_API_KEY=your-acunetix-api-key  → placeholder → cleared
+          GOOGLE_API_KEY=AIza... → real value → kept
+        """
+        # Configs with string fields that should be cleared if they're placeholders
+        configs_to_check = [
+            (self.acunetix, ["api_url", "api_key"]),
+            (self.burp, ["api_url", "api_key"]),
+            (self.zap, ["api_url", "api_key"]),
+            (self.shodan, ["api_key"]),
+            (self.metasploit, ["rpc_password"]),
+            (self.llm, ["google_api_key", "openai_api_key", "anthropic_api_key"]),
+        ]
+
+        for config_obj, fields in configs_to_check:
+            for field_name in fields:
+                value = getattr(config_obj, field_name, "")
+                if isinstance(value, str) and _is_placeholder(value):
+                    object.__setattr__(config_obj, field_name, "")
 
     def _validate_llm_config(self) -> None:
         """Ensure the selected LLM provider has a matching API key."""

@@ -6,6 +6,7 @@ from src.tools.scanner.zap import ZAPTool
 from src.tools.scanner.acunetix import AcunetixTool
 from src.tools.scanner.nikto import NiktoTool
 from src.tools.scanner.testssl import TestSSLTool
+from src.tools.scanner.secret_scanner import SecretScannerTool
 
 __all__ = [
     "NucleiTool",
@@ -15,4 +16,5 @@ __all__ = [
     "AcunetixTool",
     "NiktoTool",
     "TestSSLTool",
+    "SecretScannerTool",
 ]

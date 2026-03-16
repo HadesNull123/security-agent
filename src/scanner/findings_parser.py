@@ -148,13 +148,67 @@ class FindingsParser:
             sev_int = vuln.get("severity", 0)
             severity = severity_map.get(sev_int, Severity.INFO)
 
+            # Build description with impact if available
+            desc_parts = []
+            if vuln.get("description"):
+                desc_parts.append(vuln["description"])
+            if vuln.get("impact"):
+                desc_parts.append(f"\n\n**Impact:** {vuln['impact']}")
+            description = "".join(desc_parts) or vuln.get("vt_name", "")
+
+            # Build evidence from request/response
+            evidence_parts = []
+            if vuln.get("request"):
+                evidence_parts.append(f"Request:\n{vuln['request']}")
+            if vuln.get("response_info"):
+                evidence_parts.append(f"Response:\n{vuln['response_info']}")
+            if vuln.get("affects_detail"):
+                evidence_parts.append(f"Detail: {vuln['affects_detail']}")
+            evidence = "\n\n".join(evidence_parts)
+
+            # CVSS score
+            cvss_score = None
+            if vuln.get("cvss_score"):
+                try:
+                    cvss_score = float(vuln["cvss_score"])
+                except (ValueError, TypeError):
+                    pass
+
+            # References
+            references = vuln.get("references", [])
+            if isinstance(references, str):
+                references = [references]
+
+            # Tags as category
+            tags = vuln.get("tags", [])
+            category = ",".join(tags) if tags else ""
+
+            # Confidence mapping
+            conf = vuln.get("confidence", 0)
+            if conf >= 80:
+                confidence = "high"
+            elif conf >= 50:
+                confidence = "medium"
+            else:
+                confidence = "low"
+
             finding = Finding(
                 title=vuln.get("vt_name", "Unknown"),
-                description=vuln.get("description", ""),
+                description=description,
                 severity=severity,
-                confidence="high",
+                confidence=confidence,
+                category=category,
+                cvss_score=cvss_score,
                 affected_url=vuln.get("affects_url", ""),
+                evidence=evidence,
+                remediation=vuln.get("recommendation", ""),
                 tool_source="acunetix",
+                references=references,
+                extra_data={
+                    "vuln_id": vuln.get("vuln_id", ""),
+                    "cvss3": vuln.get("cvss3", ""),
+                    "criticality": vuln.get("criticality", 0),
+                },
             )
             findings.append(finding)
 
@@ -277,6 +331,38 @@ class FindingsParser:
 
         return findings
 
+    # ─── Secret Scanner ───────────────────────────────────────
+
+    def parse_secret_scanner(self, data: dict[str, Any]) -> list[Finding]:
+        """Parse secret_scanner output into findings."""
+        findings = []
+        raw_findings = data.get("findings", [])
+
+        for item in raw_findings:
+            secret = item.get("secret", "")
+            key_type = item.get("key_type", "Unknown Key")
+            url = item.get("url", "")
+            match_preview = item.get("match_preview", "")
+
+            # Default severity is HIGH, but CRITICAL for obvious admin/db credentials
+            is_critical = any(kw in key_type.lower() for kw in ("admin", "password", "db", "secret", "aws"))
+            severity = Severity.CRITICAL if is_critical else Severity.HIGH
+
+            finding = Finding(
+                title=f"Leaked Credential: {key_type}",
+                description=f"A leaked credential ({key_type}) was found exposed in the source code at {url}.",
+                severity=severity,
+                confidence="high",
+                category="credential_exposure",
+                affected_url=url,
+                evidence=f"Match:\n{match_preview}\n\nExtracted Secret: {secret}",
+                remediation="Revoke the exposed credentials immediately. Remove the secrets from the source code and use environment variables or a secure vault instead.",
+                tool_source="secret_scanner",
+            )
+            findings.append(finding)
+
+        return findings
+
     # ─── LLM Analysis Text ───────────────────────────────────
 
     def parse_llm_analysis(self, text: str) -> list[Finding]:
@@ -351,6 +437,7 @@ class FindingsParser:
             "commix": self.parse_commix,
             "ffuf": self.parse_ffuf,
             "gobuster": self.parse_gobuster,
+            "secret_scanner": self.parse_secret_scanner,
         }
 
         parser = parsers.get(tool_name)

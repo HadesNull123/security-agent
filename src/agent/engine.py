@@ -71,6 +71,7 @@ from src.tools.scanner import (
     GobusterTool,
     NiktoTool,
     NucleiTool,
+    SecretScannerTool,
     TestSSLTool,
     ZAPTool,
 )
@@ -128,7 +129,34 @@ class TokenTracker:
 # Pydantic schemas for LangChain tool input validation
 # ─────────────────────────────────────────────────────────────
 
-class SubfinderInput(BaseModel):
+def _strip_schema_keys(schema: dict) -> dict:
+    """Recursively strip 'title' and 'default' from JSON schema for Gemini compatibility."""
+    cleaned = {}
+    for key, value in schema.items():
+        if key in ("title", "default"):
+            continue
+        if isinstance(value, dict):
+            cleaned[key] = _strip_schema_keys(value)
+        elif isinstance(value, list):
+            cleaned[key] = [
+                _strip_schema_keys(item) if isinstance(item, dict) else item
+                for item in value
+            ]
+        else:
+            cleaned[key] = value
+    return cleaned
+
+
+class GeminiSafeModel(BaseModel):
+    """Base model that produces Gemini-compatible JSON schema (no 'title'/'default' keys)."""
+
+    @classmethod
+    def model_json_schema(cls, *args, **kwargs):
+        schema = super().model_json_schema(*args, **kwargs)
+        return _strip_schema_keys(schema)
+
+
+class SubfinderInput(GeminiSafeModel):
     target: str = Field(description="Domain to enumerate subdomains for")
     sources: str = Field(default="", description="Comma-separated list of sources")
 
@@ -196,6 +224,9 @@ class GobusterInput(BaseModel):
 class ZAPInput(BaseModel):
     target: str = Field(description="URL to scan with ZAP")
     scan_type: str = Field(default="spider_and_active", description="Type: spider, active, spider_and_active")
+
+class SecretScannerInput(BaseModel):
+    urls: str = Field(description="Comma-separated list of URLs to scan for leaked credentials in JS/CSS/HTML.")
 
 class AcunetixInput(BaseModel):
     target: str = Field(description="URL to scan with Acunetix")
@@ -301,6 +332,7 @@ class SecurityAgent:
             "gobuster": GobusterTool(timeout=timeout),
             "nikto": NiktoTool(timeout=timeout),
             "testssl": TestSSLTool(timeout=timeout),
+            "secret_scanner": SecretScannerTool(timeout=timeout),
         }
         if self.config.zap.api_key:
             self.scanner_tools["zap"] = ZAPTool(self.config.zap, timeout=600)
@@ -485,6 +517,7 @@ class SecurityAgent:
                 "gobuster": GobusterInput, "zap": ZAPInput,
                 "acunetix": AcunetixInput,
                 "nikto": NiktoInput, "testssl": TestSSLInput,
+                "secret_scanner": SecretScannerInput,
             }
             tool_map = {n: (available[n], schema_map[n]) for n in available if n in schema_map}
 

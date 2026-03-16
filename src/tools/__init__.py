@@ -154,11 +154,18 @@ async def run_command(
     timeout: int = 300,
     cwd: str | None = None,
     env: dict[str, str] | None = None,
+    output_file: str | None = None,
 ) -> tuple[int, str, str]:
     """
     Run a shell command asynchronously and return (returncode, stdout, stderr).
-    If the binary is a bare name (no path separator), resolves via shutil.which
-    with ~/go/bin prepended to PATH so Go tools take priority over Python CLIs.
+
+    Uses a two-phase timeout strategy:
+    1. Wait up to `timeout` seconds for the process to complete.
+    2. If it times out, check if the process is still producing output.
+       Give it an extra grace period (60s) before killing.
+
+    If `output_file` is provided, stdout is ALSO written to that file
+    so results are preserved even if the process is killed.
     """
     # Build env with ~/go/bin at the front of PATH
     run_env = env or os.environ.copy()
@@ -183,20 +190,70 @@ async def run_command(
             cwd=cwd,
             env=run_env,
         )
-        stdout, stderr = await asyncio.wait_for(
-            proc.communicate(),
-            timeout=timeout,
-        )
+
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            # ─── Grace period: process may be finishing, wait a bit more ──
+            logger.warning(
+                f"Command '{cmd[0]}' exceeded {timeout}s timeout. "
+                f"Granting 60s grace period before terminating..."
+            )
+            try:
+                stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                    proc.communicate(),
+                    timeout=60,
+                )
+                logger.info(f"Command '{cmd[0]}' finished during grace period.")
+            except asyncio.TimeoutError:
+                # Truly timed out — kill it
+                logger.warning(f"Command '{cmd[0]}' still running after grace period. Killing.")
+                proc.kill()
+                # Collect any partial output
+                try:
+                    stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                        proc.communicate(), timeout=5
+                    )
+                except Exception:
+                    stdout_bytes, stderr_bytes = b"", b""
+
+                stdout_str = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+                stderr_str = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+
+                # Save partial output if output_file specified
+                if output_file and stdout_str:
+                    _write_output_file(output_file, stdout_str)
+
+                return -1, stdout_str, f"Command timed out after {timeout + 60}s (partial output captured). {stderr_str}"
+
+        stdout_str = stdout_bytes.decode("utf-8", errors="replace")
+        stderr_str = stderr_bytes.decode("utf-8", errors="replace")
+
+        # Save output to file if specified
+        if output_file and stdout_str:
+            _write_output_file(output_file, stdout_str)
+
         return (
             proc.returncode or 0,
-            stdout.decode("utf-8", errors="replace"),
-            stderr.decode("utf-8", errors="replace"),
+            stdout_str,
+            stderr_str,
         )
-    except asyncio.TimeoutError:
-        proc.kill()
-        return -1, "", f"Command timed out after {timeout}s"
     except FileNotFoundError:
         return -1, "", f"Command not found: {cmd[0]}"
+
+
+def _write_output_file(filepath: str, content: str) -> None:
+    """Write output content to a file, creating directories as needed."""
+    try:
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+        logger.debug(f"Output saved to: {filepath}")
+    except Exception as e:
+        logger.warning(f"Failed to save output to {filepath}: {e}")
 
 
 def parse_json_lines(output: str) -> list[dict]:

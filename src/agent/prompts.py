@@ -57,16 +57,17 @@ Reconnaissance Results: {recon_summary}
 Strategy:
 1. Based on the tech stack discovered in recon, select appropriate nuclei templates/tags
 2. Fuzz for hidden directories and files with ffuf or gobuster
-3. If ZAP/Acunetix are available, launch a comprehensive scan
-4. Check for CORS misconfigurations (nuclei --tags cors)
-5. Test for SSRF and SSTI on URL/template parameters (nuclei --tags ssrf,ssti)
-6. If JWT tokens detected, test for algorithm confusion and weak secrets (nuclei --tags jwt)
-7. Check for cloud misconfigurations and exposed S3 buckets (nuclei --tags cloud,aws,s3)
-8. Test login/auth endpoints for rate limiting and default credentials
-9. Check for sensitive file exposure (.env, .git, backup.sql, phpinfo) via nuclei + ffuf
-10. Detect exposed Git/SVN repos and source maps (nuclei --tags git,svn,exposure)
-11. Look for information disclosure (debug pages, stack traces, directory listing)
-12. Look for: SQLi, XSS, SSRF, SSTI, LFI/RFI, IDOR, CORS, JWT flaws, auth issues, misconfigurations
+3. Use secret_scanner to find leaked credentials (API keys, passwords, tokens) in discovered JS, CSS, and HTML urls.
+4. If ZAP/Acunetix are available, launch a comprehensive scan
+5. Check for CORS misconfigurations (nuclei --tags cors)
+6. Test for SSRF and SSTI on URL/template parameters (nuclei --tags ssrf,ssti)
+7. If JWT tokens detected, test for algorithm confusion and weak secrets (nuclei --tags jwt)
+8. Check for cloud misconfigurations and exposed S3 buckets (nuclei --tags cloud,aws,s3)
+9. Test login/auth endpoints for rate limiting and default credentials
+10. Check for sensitive file exposure (.env, .git, backup.sql, phpinfo) via nuclei + ffuf
+11. Detect exposed Git/SVN repos and source maps (nuclei --tags git,svn,exposure)
+12. Look for information disclosure (debug pages, stack traces, directory listing)
+13. Look for: SQLi, XSS, SSRF, SSTI, LFI/RFI, IDOR, CORS, JWT flaws, auth issues, misconfigurations
 
 Technologies detected: {technologies}
 Open ports: {ports}
