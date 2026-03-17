@@ -153,6 +153,13 @@ TOOL_REGISTRY: dict[str, ToolInfo] = {
         install_command="",
         description="Built-in credential leak scanner (pure Python, no install needed)",
     ),
+    "email_security": ToolInfo(
+        name="email_security",
+        binary_name="__builtin__",
+        install_method="builtin",
+        install_command="",
+        description="Built-in email security checker (SPF, DKIM, DMARC — pure Python, no install needed)",
+    ),
 }
 
 

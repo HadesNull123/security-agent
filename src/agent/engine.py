@@ -998,6 +998,8 @@ class SecurityAgent:
             # Get wordlist paths for the current scan mode
             wl = getattr(self, "_wordlists", {})
             dir_wordlist = wl.get("dir", "/usr/share/wordlists/dirb/common.txt")
+            sub_wordlist = wl.get("subdomains", "")
+            api_wordlist = wl.get("api", "")
             base_prompt = SCANNING_PROMPT.format(
                 target=target_str,
                 recon_summary=str(recon_ctx)[:2000],
@@ -1005,11 +1007,19 @@ class SecurityAgent:
                 ports=self.context.get("ports", "Not scanned"),
                 urls_count=self.context.get("urls_count", 0),
             )
-            base_prompt += (
-                f"\n\n## 📂 Wordlists (use these exact paths for ffuf/gobuster)\n"
-                f"- **Directory brute-force**: `{dir_wordlist}`\n"
-                f"  - Use this as the `wordlist` parameter for ffuf and gobuster\n"
+            wl_section = (
+                f"\n\n## 📂 Wordlists (MUST use these exact paths)\n"
+                f"- **Directory brute-force** (ffuf, gobuster): `{dir_wordlist}`\n"
             )
+            if sub_wordlist:
+                wl_section += f"- **Subdomain brute-force** (subfinder -w, dnsx): `{sub_wordlist}`\n"
+            if api_wordlist:
+                wl_section += f"- **API endpoint discovery** (ffuf, gobuster): `{api_wordlist}`\n"
+            wl_section += (
+                f"\n⚠️ IMPORTANT: Always use the EXACT paths above as the `wordlist` parameter.\n"
+                f"Do NOT use /usr/share/wordlists/* unless the above paths don't exist.\n"
+            )
+            base_prompt += wl_section
         elif phase == ScanPhase.EXPLOITATION:
             base_prompt = EXPLOITATION_PROMPT.format(
                 target=target_str,
@@ -1115,8 +1125,8 @@ class SecurityAgent:
         exploit_results_list = []
         for er in self.session.exploit_results:
             exploit_results_list.append(
-                f"- Tool: {er.tool_name} | Target: {getattr(er, 'target', 'N/A')} | "
-                f"Success: {er.success} | Output: {str(getattr(er, 'output', ''))[:500]}"
+                f"- Tool: {er.tool_used} | Finding: {er.finding_id} | "
+                f"Success: {er.success} | Output: {str(er.output)[:500]}"
             )
         # Also include exploitation-phase tool executions
         for te in self.session.tool_executions:
@@ -1138,7 +1148,7 @@ class SecurityAgent:
         # Build tools — AI needs add_finding to update findings
         from langchain.tools import StructuredTool
         add_finding_tool = StructuredTool.from_function(
-            coroutine=self._add_finding,
+            coroutine=self._add_finding_fn(),
             name="add_finding",
             description="Add or update a security finding with corrected information",
             args_schema=AddFindingInput,

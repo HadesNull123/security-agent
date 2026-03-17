@@ -67,6 +67,7 @@ Reconnaissance Results: {recon_summary}
 
 Strategy — run EVERY scanning tool:
 1. nuclei — Vulnerability scan with appropriate severity and tags (MUST RUN)
+   - Run TWICE: once normal scan, once with fuzz=true for deep fuzzing
 2. ffuf — Directory/file brute-force (MUST RUN)
 3. gobuster — Additional brute-force (MUST RUN)
 4. nikto — Web server vulnerability scan (MUST RUN)

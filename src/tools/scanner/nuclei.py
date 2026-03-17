@@ -1,21 +1,66 @@
 """Nuclei - Template-based vulnerability scanner tool wrapper."""
 
 from __future__ import annotations
+
+import logging
+import os
+from pathlib import Path
 from typing import Any
+
 from src.core.config import ScanPhase
 from src.tools import BaseTool, ToolResult, run_command, parse_json_lines
+
+logger = logging.getLogger(__name__)
 
 
 class NucleiTool(BaseTool):
     name = "nuclei"
     description = (
         "Scan targets for vulnerabilities using YAML-based templates. "
-        "Supports scanning for CVEs, misconfigurations, default credentials, exposed panels, and more."
+        "Supports scanning for CVEs, misconfigurations, default credentials, exposed panels, and more. "
+        "Set fuzz=true for deep fuzzing with nuclei's fuzzing templates."
     )
     phase = ScanPhase.SCANNING
+    _templates_checked = False  # Class-level: only update once per process
+
+    async def _ensure_templates(self) -> None:
+        """Ensure nuclei templates are downloaded. Critical — without templates nuclei exits in 2s."""
+        if NucleiTool._templates_checked:
+            return
+
+        # Check if templates directory exists and has content
+        home = Path.home()
+        template_dirs = [
+            home / "nuclei-templates",
+            home / ".local" / "nuclei-templates",
+            home / ".config" / "nuclei" / "templates",
+        ]
+        has_templates = any(
+            d.exists() and any(d.rglob("*.yaml"))
+            for d in template_dirs
+        )
+
+        if not has_templates:
+            logger.info("📥 Nuclei templates not found — downloading (first run)...")
+            rc, out, err = await run_command(["nuclei", "-update-templates"])
+            if rc == 0:
+                logger.info("✅ Nuclei templates downloaded successfully")
+            else:
+                logger.warning(f"⚠️ Nuclei template update returned code {rc}: {err[:300]}")
+        else:
+            # Still check for updates periodically (non-blocking)
+            logger.info("📋 Nuclei templates found, checking for updates...")
+            rc, out, err = await run_command(["nuclei", "-update-templates", "-ut"])
+            if rc == 0:
+                logger.info("✅ Nuclei templates up to date")
+
+        NucleiTool._templates_checked = True
 
     async def _run(self, target: str, **kwargs: Any) -> ToolResult:
-        cmd = ["nuclei", "-u", target, "-json", "-silent"]
+        # ★ CRITICAL: ensure templates are downloaded before scanning
+        await self._ensure_templates()
+
+        cmd = ["nuclei", "-u", target, "-jsonl", "-no-color"]
 
         # Template selection
         has_filter = False
@@ -36,19 +81,30 @@ class NucleiTool(BaseTool):
             cmd.extend(["-id", template_ids])
             has_filter = True
 
-        # ★ Smart defaults: if no specific filter, run broad scan with severity filter
-        # NOTE: -as (auto-scan) uses Wappalyzer tech detection which often picks 0 templates
-        # and exits in 2 seconds. Instead use explicit severity + common tags.
+        # ★ Smart defaults: broader scan when no specific filter
         if not has_filter:
-            cmd.extend(["-severity", "critical,high,medium"])
-            # Run common vulnerability categories (thousands of templates, not all 9k)
-            cmd.extend(["-tags", "cve,sqli,xss,rce,lfi,ssrf,xxe,idor,cors,redirect,misconfig,exposure,takeover,default-login"])
+            cmd.extend(["-severity", "critical,high,medium,low"])
+            cmd.extend(["-tags", "cve,sqli,xss,rce,lfi,ssrf,xxe,idor,cors,redirect,misconfig,exposure,takeover,default-login,token,firewall,config,panel,login,tech"])
+
+        # ★ Fuzzing mode: use nuclei's built-in fuzzing templates
+        if kwargs.get("fuzz"):
+            cmd.extend(["-t", "fuzzing/", "-fuzz", "-fa"])
+            # If severity was set via fuzz_severity, use it for fuzz alerting
+            fuzz_sev = kwargs.get("fuzz_severity", "high")
+            # Remove any existing -fa and re-add with severity
+            if "-fa" in cmd:
+                idx = cmd.index("-fa")
+                cmd[idx:idx+1] = ["-fa", fuzz_sev]
 
         # Rate control
         if rate_limit := kwargs.get("rate_limit"):
             cmd.extend(["-rl", str(rate_limit)])
+        else:
+            cmd.extend(["-rl", "150"])  # Default: 150 req/s
         if concurrency := kwargs.get("concurrency"):
             cmd.extend(["-c", str(concurrency)])
+        else:
+            cmd.extend(["-c", "25"])  # Default: 25 concurrent templates
 
         # Custom headers
         if headers := kwargs.get("headers"):
@@ -59,11 +115,16 @@ class NucleiTool(BaseTool):
         if proxy := kwargs.get("proxy"):
             cmd.extend(["-proxy", proxy])
 
-        # Performance: timeout per request + max host errors
-        cmd.extend(["-timeout", "15", "-mhe", "10"])
-        # Show scan progress stats in stderr
-        cmd.extend(["-stats"])
+        # Performance tuning
+        cmd.extend([
+            "-timeout", "15",       # 15s per request
+            "-retries", "2",        # Retry failed requests
+            "-mhe", "30",           # Max 30 host errors before giving up
+            "-stats",               # Show progress stats in stderr
+            "-stats-interval", "10",  # Stats every 10s
+        ])
 
+        logger.info(f"🔬 Running nuclei: {' '.join(cmd[:20])}...")
         returncode, stdout, stderr = await run_command(cmd)
 
         if returncode != 0 and not stdout:

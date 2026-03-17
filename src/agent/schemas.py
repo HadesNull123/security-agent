@@ -80,6 +80,8 @@ class NucleiInput(GeminiSafeModel):
     tags: str = Field(default="", description="Template tags, e.g. 'cve,sqli,xss'")
     severity: str = Field(default="", description="Severity filter: critical,high,medium,low,info")
     rate_limit: int = Field(default=0, description="Requests per second (0=default)")
+    fuzz: bool = Field(default=False, description="Enable fuzzing mode with nuclei fuzzing templates (-t fuzzing/ -fuzz)")
+    fuzz_severity: str = Field(default="high", description="Minimum severity for fuzz alerts: critical, high, medium, low")
 
 class FfufInput(GeminiSafeModel):
     target: str = Field(description="URL with FUZZ keyword, e.g. http://example.com/FUZZ")

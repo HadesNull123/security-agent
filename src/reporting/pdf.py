@@ -434,11 +434,12 @@ def generate_pdf_report(session: Any, output_dir: str = "./reports") -> str:
     story.append(HRFlowable(width="100%", thickness=1, color=_h(ACCENT_BLUE), spaceAfter=8))
     toc = [
         ("1.", "Executive Summary"),
-        ("2.", f"Findings Summary (with Evidence) — {len(session.findings)} findings"),
-        ("3.", "Detailed Findings"),
-        ("4.", "Remediation Roadmap"),
-        ("5.", "Tool Execution Log"),
-        ("6.", "Methodology"),
+        ("2.", "Reconnaissance Summary (Ports, Subdomains, Technologies)"),
+        ("3.", f"Findings Summary (with Evidence) — {len(session.findings)} findings"),
+        ("4.", "Detailed Findings"),
+        ("5.", "Remediation Roadmap"),
+        ("6.", "Tool Execution Log"),
+        ("7.", "Methodology"),
     ]
     for num, title in toc:
         story.append(Paragraph(f'<b>{num}</b>&nbsp;&nbsp;{title}', styles["toc_entry"]))
@@ -519,9 +520,155 @@ def generate_pdf_report(session: Any, output_dir: str = "./reports") -> str:
     story.append(PageBreak())
 
     # ═══════════════════════════════════════════════════════
+    # 3.5 Reconnaissance Summary (Ports, Subdomains, Technologies)
+    # ═══════════════════════════════════════════════════════
+    story.append(Paragraph("2. Reconnaissance Summary", styles["section"]))
+    story.append(HRFlowable(width="100%", thickness=1, color=_h(ACCENT_BLUE), spaceAfter=8))
+    story.append(Paragraph(
+        "The following reconnaissance data was gathered during the initial assessment phase, "
+        "including open ports, discovered subdomains, and detected technologies.",
+        styles["body"],
+    ))
+    story.append(Spacer(1, 8))
+
+    # Extract recon data from tool executions
+    recon_ports = []     # [(host, port, protocol), ...]
+    recon_subdomains = []  # [subdomain, ...]
+    recon_techs = []     # [tech, ...]
+
+    import json as _json
+    for te in getattr(session, 'tool_executions', []):
+        phase_val = te.phase.value if hasattr(te.phase, 'value') else str(te.phase)
+        if phase_val != 'recon' or not te.output:
+            continue
+        tool = te.tool_name.lower()
+        try:
+            if tool == 'naabu':
+                for line in te.output.strip().split('\n'):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = _json.loads(line)
+                        host = obj.get('host', obj.get('ip', 'N/A'))
+                        port = obj.get('port', 0)
+                        proto = obj.get('protocol', 'tcp')
+                        recon_ports.append((str(host), int(port), str(proto)))
+                    except (ValueError, _json.JSONDecodeError):
+                        # Try simple "host:port" format
+                        if ':' in line:
+                            parts = line.rsplit(':', 1)
+                            try:
+                                recon_ports.append((parts[0], int(parts[1]), 'tcp'))
+                            except ValueError:
+                                pass
+            elif tool == 'subfinder':
+                for line in te.output.strip().split('\n'):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = _json.loads(line)
+                        host = obj.get('host', obj.get('domain', ''))
+                        if host:
+                            recon_subdomains.append(host)
+                    except (ValueError, _json.JSONDecodeError):
+                        if '.' in line and not line.startswith('{'):
+                            recon_subdomains.append(line)
+            elif tool in ('httpx', 'whatweb'):
+                for line in te.output.strip().split('\n'):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = _json.loads(line)
+                        techs = obj.get('technologies', obj.get('tech', []))
+                        if isinstance(techs, list):
+                            recon_techs.extend(techs)
+                        elif isinstance(techs, str):
+                            recon_techs.append(techs)
+                    except (ValueError, _json.JSONDecodeError):
+                        pass
+        except Exception:
+            pass
+
+    # Deduplicate
+    recon_ports = sorted(set(recon_ports), key=lambda x: (x[0], x[1]))
+    recon_subdomains = sorted(set(recon_subdomains))
+    recon_techs = sorted(set(recon_techs))
+
+    # 2a. Open Ports Table
+    if recon_ports:
+        story.append(Paragraph('<b>Open Ports</b>', styles["subsection"]))
+        story.append(Spacer(1, 4))
+        port_hdr = [[
+            Paragraph('<b>Host</b>', styles["cell_white"]),
+            Paragraph('<b>Port</b>', styles["cell_white"]),
+            Paragraph('<b>Protocol</b>', styles["cell_white"]),
+        ]]
+        port_rows = []
+        for host, port, proto in recon_ports:
+            port_rows.append([
+                Paragraph(_safe(host), styles["cell"]),
+                Paragraph(str(port), styles["cell"]),
+                Paragraph(proto.upper(), styles["cell"]),
+            ])
+        port_tbl = Table(port_hdr + port_rows, colWidths=[200, 80, 80], repeatRows=1)
+        port_tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), _h(DARK_NAVY)),
+            ("GRID", (0, 0), (-1, -1), 0.5, _h(LIGHT_GRAY)),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        story.append(port_tbl)
+        story.append(Spacer(1, 6))
+        story.append(Paragraph(f'<i>Total open ports discovered: <b>{len(recon_ports)}</b></i>', styles["body_sm"]))
+    else:
+        story.append(Paragraph('<i>No open ports were discovered during reconnaissance.</i>', styles["body"]))
+    story.append(Spacer(1, 10))
+
+    # 2b. Subdomains Table
+    if recon_subdomains:
+        story.append(Paragraph('<b>Discovered Subdomains</b>', styles["subsection"]))
+        story.append(Spacer(1, 4))
+        sub_hdr = [[Paragraph('<b>#</b>', styles["cell_white"]), Paragraph('<b>Subdomain</b>', styles["cell_white"])]]
+        sub_rows = []
+        for i, sd in enumerate(recon_subdomains, 1):
+            sub_rows.append([
+                Paragraph(str(i), styles["cell"]),
+                Paragraph(_safe(sd), styles["cell_code"]),
+            ])
+        sub_tbl = Table(sub_hdr + sub_rows, colWidths=[40, 420], repeatRows=1)
+        sub_tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), _h(DARK_NAVY)),
+            ("GRID", (0, 0), (-1, -1), 0.5, _h(LIGHT_GRAY)),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ]))
+        story.append(sub_tbl)
+        story.append(Spacer(1, 6))
+        story.append(Paragraph(f'<i>Total subdomains discovered: <b>{len(recon_subdomains)}</b></i>', styles["body_sm"]))
+    else:
+        story.append(Paragraph('<i>No subdomains were discovered during reconnaissance.</i>', styles["body"]))
+    story.append(Spacer(1, 10))
+
+    # 2c. Technologies
+    if recon_techs:
+        story.append(Paragraph('<b>Detected Technologies</b>', styles["subsection"]))
+        story.append(Spacer(1, 4))
+        tech_text = ", ".join(f'<b>{_safe(t)}</b>' for t in recon_techs[:50])
+        story.append(Paragraph(tech_text, styles["body"]))
+    else:
+        story.append(Paragraph('<i>No specific technologies were detected.</i>', styles["body"]))
+
+    story.append(PageBreak())
+
+    # ═══════════════════════════════════════════════════════
     # 4. Findings Summary Table (WITH evidence snippet)
     # ═══════════════════════════════════════════════════════
-    story.append(Paragraph("2. Findings Summary", styles["section"]))
+    story.append(Paragraph("3. Findings Summary", styles["section"]))
     story.append(HRFlowable(width="100%", thickness=1, color=_h(ACCENT_BLUE), spaceAfter=8))
 
     if session.findings:
@@ -580,7 +727,7 @@ def generate_pdf_report(session: Any, output_dir: str = "./reports") -> str:
     # ═══════════════════════════════════════════════════════
     # 5. Detailed Findings (full content)
     # ═══════════════════════════════════════════════════════
-    story.append(Paragraph("3. Detailed Findings", styles["section"]))
+    story.append(Paragraph("4. Detailed Findings", styles["section"]))
     story.append(HRFlowable(width="100%", thickness=1, color=_h(ACCENT_BLUE), spaceAfter=8))
 
     for i, f in enumerate(session.findings, 1):
@@ -591,7 +738,7 @@ def generate_pdf_report(session: Any, output_dir: str = "./reports") -> str:
     # ═══════════════════════════════════════════════════════
     # 6. Remediation Roadmap
     # ═══════════════════════════════════════════════════════
-    story.append(Paragraph("4. Remediation Roadmap", styles["section"]))
+    story.append(Paragraph("5. Remediation Roadmap", styles["section"]))
     story.append(HRFlowable(width="100%", thickness=1, color=_h(ACCENT_BLUE), spaceAfter=8))
 
     def _by_sev(sevs):
@@ -644,7 +791,7 @@ def generate_pdf_report(session: Any, output_dir: str = "./reports") -> str:
     # ═══════════════════════════════════════════════════════
     # 7. Tool Execution Log
     # ═══════════════════════════════════════════════════════
-    story.append(Paragraph("5. Tool Execution Log", styles["section"]))
+    story.append(Paragraph("6. Tool Execution Log", styles["section"]))
     story.append(HRFlowable(width="100%", thickness=1, color=_h(ACCENT_BLUE), spaceAfter=8))
 
     if getattr(session, "tool_executions", None):
@@ -693,7 +840,7 @@ def generate_pdf_report(session: Any, output_dir: str = "./reports") -> str:
     # ═══════════════════════════════════════════════════════
     # 8. Methodology
     # ═══════════════════════════════════════════════════════
-    story.append(Paragraph("6. Methodology", styles["section"]))
+    story.append(Paragraph("7. Methodology", styles["section"]))
     story.append(HRFlowable(width="100%", thickness=1, color=_h(ACCENT_BLUE), spaceAfter=8))
     story.append(Paragraph(
         "The assessment followed a structured methodology aligned with OWASP, PTES, and NIST SP 800-115:",
