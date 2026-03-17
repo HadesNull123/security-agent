@@ -18,7 +18,7 @@ class WhatWebTool(BaseTool):
         aggression = kwargs.get("aggression", 1)  # 1=stealthy, 3=aggressive
         cmd.extend(["-a", str(aggression)])
 
-        returncode, stdout, stderr = await run_command(cmd, timeout=self.timeout)
+        returncode, stdout, stderr = await run_command(cmd)
 
         if returncode != 0 and not stdout:
             return ToolResult(

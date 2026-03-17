@@ -45,7 +45,7 @@ class NiktoTool(BaseTool):
         timeout_val = kwargs.get("timeout", 10)
         cmd.extend(["-timeout", str(timeout_val)])
 
-        returncode, stdout, stderr = await run_command(cmd, timeout=self.timeout)
+        returncode, stdout, stderr = await run_command(cmd)
 
         if returncode != 0 and not stdout:
             return ToolResult(

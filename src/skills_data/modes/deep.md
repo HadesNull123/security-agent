@@ -21,7 +21,6 @@ You are NOT allowed to finish a phase with only 1-2 tools. You MUST run EVERY av
 6. **wafw00f** - WAF detection (MANDATORY)
 7. **dnsx** - DNS resolution with record_type='A,AAAA,CNAME,MX,NS,TXT' (MANDATORY)
 8. **amass** - Additional subdomain enumeration (if available)
-9. **theHarvester** - OSINT gathering (if available)
 
 ## SCANNING Phase - MANDATORY Tools (run ALL of these):
 1. **nuclei** - Run with severity=critical,high,medium,low (ALL severities) (MANDATORY)

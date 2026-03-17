@@ -58,7 +58,7 @@ class AcunetixTool(BaseTool):
 
         try:
             async with httpx.AsyncClient(
-                timeout=60, verify=self.verify_ssl, headers=self._headers()
+                timeout=60, verify=False, headers=self._headers()
             ) as client:
                 # ── Step 1: Add target ──
                 target_id = await self._add_target(client, target)

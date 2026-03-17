@@ -97,7 +97,7 @@ class HttpxTool(BaseTool):
         if threads := kwargs.get("threads"):
             cmd.extend(["-threads", str(threads)])
 
-        returncode, stdout, stderr = await run_command(cmd, timeout=self.timeout)
+        returncode, stdout, stderr = await run_command(cmd)
 
         if returncode != 0 and not stdout:
             # Detect Python httpx CLI error

@@ -57,19 +57,7 @@ TOOL_REGISTRY: dict[str, ToolInfo] = {
         install_command="go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest",
         description="HTTP probing and tech detection",
     ),
-    "theHarvester": ToolInfo(
-        name="theHarvester",
-        binary_name="theHarvester",
-        install_method="pip",
-        install_command=(
-            "rm -rf /tmp/theHarvester && "
-            "git clone https://github.com/laramies/theHarvester /tmp/theHarvester && "
-            "cd /tmp/theHarvester && "
-            "pipx install . && "
-            "pipx ensurepath"
-        ),
-        description="OSINT email/subdomain/IP gathering",
-    ),
+
     "amass": ToolInfo(
         name="amass",
         binary_name="amass",
@@ -192,7 +180,6 @@ class ToolInstaller:
         Special handling for:
         - Go tools that conflict with Python packages (e.g. 'httpx')
         - Builtin Python tools (e.g. 'secret_scanner') — always available
-        - theHarvester — pip may install as 'theHarvester' or 'theharvester'
         """
         info = TOOL_REGISTRY.get(tool_name)
         if not info:
@@ -216,18 +203,6 @@ class ToolInstaller:
                     return True
                 return False  # Python httpx found, not Go httpx
 
-        # theHarvester: pip may install as different binary names or only as Python module
-        if tool_name == "theHarvester":
-            for binary in ("theHarvester", "theharvester", "theHarvester.py"):
-                if shutil.which(binary):
-                    return True
-            # Check if importable as Python module
-            try:
-                import importlib
-                importlib.import_module("theHarvester")
-                return True
-            except ImportError:
-                return False
 
         return shutil.which(info.binary_name) is not None
 

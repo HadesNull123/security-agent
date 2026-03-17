@@ -40,7 +40,7 @@ class AmassTool(BaseTool):
             else:
                 cmd.extend(["-timeout", "5"])
 
-            returncode, stdout, stderr = await run_command(cmd, timeout=self.timeout)
+            returncode, stdout, stderr = await run_command(cmd)
 
             # Read results from output file
             subdomains = []

@@ -54,7 +54,7 @@ class DnsxTool(BaseTool):
             cmd.extend(["-rl", str(rate_limit)])
 
         try:
-            returncode, stdout, stderr = await run_command(cmd, timeout=self.timeout)
+            returncode, stdout, stderr = await run_command(cmd)
         finally:
             if tmp_input and os.path.exists(tmp_input.name):
                 os.unlink(tmp_input.name)

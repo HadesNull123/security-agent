@@ -39,7 +39,7 @@ class GobusterTool(BaseTool):
         if status_codes := kwargs.get("status_codes"):
             cmd.extend(["-s", status_codes])
 
-        returncode, stdout, stderr = await run_command(cmd, timeout=self.timeout)
+        returncode, stdout, stderr = await run_command(cmd)
 
         if returncode != 0 and not stdout:
             return ToolResult(

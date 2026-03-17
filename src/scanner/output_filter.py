@@ -37,7 +37,6 @@ TOOL_OUTPUT_LIMITS: dict[str, int] = {
     "httpx": 2500,
     "whatweb": 2500,
     "wafw00f": 1500,
-    "theHarvester": 2000,
     "amass": 2000,
     "dnsx": 2000,
     # Scanner tools

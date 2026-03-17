@@ -47,7 +47,6 @@ Strategy — run EVERY tool in this order:
 6. wafw00f — Detect WAFs (MUST RUN)
 7. dnsx — DNS resolution (MUST RUN)
 8. amass — Additional subdomain enumeration (run if available)
-9. theHarvester — OSINT data (run if available)
 
 Refer to the Available Tool Skills section above for detailed guidance on each tool.
 You MUST call EVERY tool that is marked ✅ available. Do NOT skip any.

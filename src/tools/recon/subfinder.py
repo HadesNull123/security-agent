@@ -22,7 +22,7 @@ class SubfinderTool(BaseTool):
         if rate_limit := kwargs.get("rate_limit"):
             cmd.extend(["-rl", str(rate_limit)])
 
-        returncode, stdout, stderr = await run_command(cmd, timeout=self.timeout)
+        returncode, stdout, stderr = await run_command(cmd)
 
         if returncode != 0 and not stdout:
             return ToolResult(

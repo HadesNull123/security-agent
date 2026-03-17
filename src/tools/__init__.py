@@ -61,7 +61,7 @@ class BaseTool(ABC):
 
     Attributes:
         binary_name: The actual binary name on disk (may differ from tool name).
-                     E.g. name="theHarvester" but binary_name="theHarvester"
+                     E.g. name="amass" but binary_name="amass"
     """
 
     name: str = "base_tool"
@@ -142,27 +142,32 @@ class BaseTool(ABC):
 
 async def run_command(
     cmd: list[str],
-    timeout: int = 0,
     cwd: str | None = None,
     env: dict[str, str] | None = None,
     output_file: str | None = None,
-    idle_timeout: int = 120,
     on_output: callable | None = None,
+    **kwargs,
 ) -> tuple[int, str, str]:
     """
     Run a shell command asynchronously and return (returncode, stdout, stderr).
 
-    Completion detection: process runs indefinitely as long as it produces output.
-    Terminated only when:
-    - Process exits on its own (natural completion)
-    - No new output for `idle_timeout` seconds (default 120s) → assumed done
-
-    No hard timeout — if the tool is working and producing output, it keeps running.
+    NO TIMEOUTS. Completion is detected by:
+    1. Process exits on its own (natural completion)
+    2. Stderr shows fatal error → terminate early
+    3. Process hangs (no stdout/stderr for 120s) → assume done, terminate
 
     If `output_file` is provided, stdout is ALSO written to that file.
     If `on_output` is provided, called with each output line for real-time streaming.
     """
     import time as _time
+
+    # Fatal error patterns — if stderr contains these, stop immediately
+    FATAL_PATTERNS = (
+        "command not found", "no such file", "permission denied",
+        "segmentation fault", "core dumped", "killed",
+        "cannot execute", "exec format error",
+        "panic:", "fatal error:",
+    )
 
     # Build env with ~/go/bin at the front of PATH
     run_env = env or os.environ.copy()
@@ -190,15 +195,15 @@ async def run_command(
 
         stdout_lines: list[str] = []
         stderr_lines: list[str] = []
-        last_output_time = _time.monotonic()
+        last_activity = _time.monotonic()
+        has_fatal_error = False
 
         async def _read_stream(stream, target_list, is_stdout=True):
-            nonlocal last_output_time
+            nonlocal last_activity, has_fatal_error
             while True:
                 try:
                     line = await asyncio.wait_for(stream.readline(), timeout=5)
                 except asyncio.TimeoutError:
-                    # No data in 5s — check if process exited
                     if proc.returncode is not None:
                         break
                     continue
@@ -208,7 +213,14 @@ async def run_command(
 
                 decoded = line.decode("utf-8", errors="replace").rstrip("\n")
                 target_list.append(decoded)
-                last_output_time = _time.monotonic()
+                last_activity = _time.monotonic()
+
+                # Check stderr for fatal errors
+                if not is_stdout and decoded.strip():
+                    lower = decoded.lower()
+                    if any(p in lower for p in FATAL_PATTERNS):
+                        has_fatal_error = True
+                        logger.warning(f"Fatal error detected in {cmd[0]}: {decoded[:200]}")
 
                 if on_output and is_stdout and decoded.strip():
                     try:
@@ -222,25 +234,36 @@ async def run_command(
             asyncio.create_task(_read_stream(proc.stderr, stderr_lines, is_stdout=False)),
         ]
 
-        # Monitor: only check idle output — no hard timeout
+        # Monitor: check for natural exit, fatal errors, or hung process
+        HANG_THRESHOLD = 120  # seconds of no output = assume hung/done
         while not all(t.done() for t in read_tasks):
             await asyncio.sleep(2)
 
-            # Check if process finished naturally
+            # 1. Process exited naturally
             if proc.returncode is not None:
-                # Process exited — drain remaining buffered output
                 try:
                     await asyncio.wait_for(asyncio.gather(*read_tasks), timeout=5)
                 except asyncio.TimeoutError:
                     pass
                 break
 
-            # Idle check — no output for idle_timeout seconds
-            idle_elapsed = _time.monotonic() - last_output_time
-            if idle_elapsed > idle_timeout:
+            # 2. Fatal error in stderr → terminate
+            if has_fatal_error:
+                logger.info(f"Terminating {cmd[0]} due to fatal error in stderr")
+                proc.terminate()
+                await asyncio.sleep(2)
+                if proc.returncode is None:
+                    proc.kill()
+                for t in read_tasks:
+                    t.cancel()
+                break
+
+            # 3. Hung process — no output for HANG_THRESHOLD seconds
+            idle_secs = _time.monotonic() - last_activity
+            if idle_secs > HANG_THRESHOLD:
                 logger.info(
-                    f"Command '{cmd[0]}' idle for {idle_timeout}s (no new output). "
-                    f"Assuming finished. Collected {len(stdout_lines)} output lines."
+                    f"Process '{cmd[0]}' produced no output for {HANG_THRESHOLD}s. "
+                    f"Assuming finished/hung. Collected {len(stdout_lines)} lines."
                 )
                 proc.terminate()
                 await asyncio.sleep(2)

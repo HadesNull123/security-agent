@@ -43,7 +43,7 @@ class TestSSLTool(BaseTool):
         # Target must be last
         cmd.append(target)
 
-        returncode, stdout, stderr = await run_command(cmd, timeout=self.timeout)
+        returncode, stdout, stderr = await run_command(cmd)
 
         if returncode != 0 and not stdout:
             return ToolResult(

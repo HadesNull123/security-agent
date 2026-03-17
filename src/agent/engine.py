@@ -60,7 +60,6 @@ from src.tools.recon import (
     KatanaTool,
     NaabuTool,
     SubfinderTool,
-    TheHarvesterTool,
     Wafw00fTool,
     WhatWebTool,
     DnsxTool,
@@ -224,10 +223,6 @@ class HttpxInput(GeminiSafeModel):
     status_code: bool = Field(default=True, description="Show status codes")
     follow_redirects: bool = Field(default=True, description="Follow redirects")
 
-class TheHarvesterInput(GeminiSafeModel):
-    target: str = Field(description="Domain to gather information on")
-    data_source: str = Field(default="all", description="Data source: all, bing, google, linkedin, etc.")
-    limit: int = Field(default=200, description="Limit results")
 
 class AmassInput(GeminiSafeModel):
     target: str = Field(description="Domain for subdomain enumeration")
@@ -369,7 +364,6 @@ class SecurityAgent:
             "naabu": NaabuTool(),
             "katana": KatanaTool(),
             "httpx": HttpxTool(),
-            "theHarvester": TheHarvesterTool(),
             "amass": AmassTool(),
             "whatweb": WhatWebTool(),
             "wafw00f": Wafw00fTool(),
@@ -593,7 +587,7 @@ class SecurityAgent:
             schema_map = {
                 "subfinder": SubfinderInput, "naabu": NaabuInput,
                 "katana": KatanaInput, "httpx": HttpxInput,
-                "theHarvester": TheHarvesterInput, "amass": AmassInput,
+                "amass": AmassInput,
                 "whatweb": WhatWebInput, "wafw00f": Wafw00fInput,
                 "dnsx": DnsxInput,
             }

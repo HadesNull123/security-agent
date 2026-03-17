@@ -64,7 +64,7 @@ class NucleiTool(BaseTool):
         if kwargs.get("automatic", False) and "-as" not in cmd:
             cmd.extend(["-as"])
 
-        returncode, stdout, stderr = await run_command(cmd, timeout=self.timeout)
+        returncode, stdout, stderr = await run_command(cmd)
 
         if returncode != 0 and not stdout:
             return ToolResult(
