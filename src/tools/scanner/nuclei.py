@@ -67,9 +67,6 @@ class NucleiTool(BaseTool):
         if templates := kwargs.get("templates"):
             cmd.extend(["-t", templates])
             has_filter = True
-        if tags := kwargs.get("tags"):
-            cmd.extend(["-tags", tags])
-            has_filter = True
         if severity := kwargs.get("severity"):
             cmd.extend(["-severity", severity])
             has_filter = True
@@ -81,20 +78,16 @@ class NucleiTool(BaseTool):
             cmd.extend(["-id", template_ids])
             has_filter = True
 
-        # ★ Smart defaults: broader scan when no specific filter
-        if not has_filter:
-            cmd.extend(["-severity", "critical,high,medium,low"])
-            cmd.extend(["-tags", "cve,sqli,xss,rce,lfi,ssrf,xxe,idor,cors,redirect,misconfig,exposure,takeover,default-login,token,firewall,config,panel,login,tech"])
+        # ★ Fuzzing mode: ONLY fuzzing templates, no mixing
+        is_fuzz = kwargs.get("fuzz", False)
 
-        # ★ Fuzzing mode: use nuclei's built-in fuzzing templates
-        if kwargs.get("fuzz"):
-            cmd.extend(["-t", "fuzzing/", "-fuzz", "-fa"])
-            # If severity was set via fuzz_severity, use it for fuzz alerting
+        if is_fuzz:
+            # Pure fuzzing: nuclei -u target -t fuzzing/ -fuzz -fa high
             fuzz_sev = kwargs.get("fuzz_severity", "high")
-            # Remove any existing -fa and re-add with severity
-            if "-fa" in cmd:
-                idx = cmd.index("-fa")
-                cmd[idx:idx+1] = ["-fa", fuzz_sev]
+            cmd.extend(["-t", "fuzzing/", "-fuzz", "-fa", fuzz_sev])
+        elif not has_filter:
+            # ★ Normal scan: just severity filter, no tags
+            cmd.extend(["-severity", "critical,high,medium,low"])
 
         # Rate control
         if rate_limit := kwargs.get("rate_limit"):
