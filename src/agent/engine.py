@@ -692,13 +692,20 @@ class SecurityAgent:
 
         except Exception as e:
             logger.error(f"❌ Scan failed: {e}")
-            # B3 fix: Check session exists before updating status
             if self.session:
                 self.session.status = "failed"
                 try:
                     await self.db.update_session_status(self.session.id, "failed")
                 except Exception:
                     pass
+                # ★ ALWAYS generate report even on failure — user needs results
+                if self.ui:
+                    self.ui.log("⚠️ Scan error — generating report with collected data...")
+                try:
+                    logger.info("Generating report from partial data after failure...")
+                    await self._generate_report(targets)
+                except Exception as report_err:
+                    logger.warning(f"Report generation also failed: {report_err}")
             raise
 
         finally:
@@ -1355,26 +1362,32 @@ class SecurityAgent:
                 logger.warning(f"JSON report generation failed: {e}")
         except Exception as e:
             logger.warning(f"Jinja2 report failed, using LLM fallback: {e}")
-            # Fallback: LLM-generated report
-            prompt = REPORTING_PROMPT.format(
-                target=", ".join(targets),
-                total_findings=len(self.session.findings),
-                severity_summary=json.dumps(self.session.severity_summary),
-                tools_used=", ".join({te.tool_name for te in self.session.tool_executions}),
-                exploit_summary=str(len(self.session.exploit_results)) + " attempts",
-                all_findings=self._get_findings_detail(),
-            )
-            self.token_tracker.track(prompt)
-            response = await self.llm.ainvoke([
-                SystemMessage(content=SYSTEM_PROMPT),
-                HumanMessage(content=prompt),
-            ])
-            report_text = response.content if hasattr(response, "content") else str(response)
-            self.token_tracker.track(report_text)
-            report_path = f"{report_dir}/report_{self.session.id[:8]}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.md"
-            with open(report_path, "w") as f:
-                f.write(report_text)
-            self.context["report_path"] = report_path
+            # Fallback: LLM-generated report (skip if tokens exhausted)
+            try:
+                self.token_tracker.check_budget()
+                prompt = REPORTING_PROMPT.format(
+                    target=", ".join(targets),
+                    total_findings=len(self.session.findings),
+                    severity_summary=json.dumps(self.session.severity_summary),
+                    tools_used=", ".join({te.tool_name for te in self.session.tool_executions}),
+                    exploit_summary=str(len(self.session.exploit_results)) + " attempts",
+                    all_findings=self._get_findings_detail(),
+                )
+                self.token_tracker.track(prompt)
+                response = await self.llm.ainvoke([
+                    SystemMessage(content=SYSTEM_PROMPT),
+                    HumanMessage(content=prompt),
+                ])
+                report_text = response.content if hasattr(response, "content") else str(response)
+                self.token_tracker.track(report_text)
+                report_path = f"{report_dir}/report_{self.session.id[:8]}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.md"
+                with open(report_path, "w") as f:
+                    f.write(report_text)
+                self.context["report_path"] = report_path
+            except TokenBudgetExhausted:
+                logger.warning("⚠️ Token budget exhausted — skipping LLM report, PDF will still generate")
+            except Exception as llm_err:
+                logger.warning(f"LLM fallback report also failed: {llm_err}")
 
         # Generate PDF report
         try:

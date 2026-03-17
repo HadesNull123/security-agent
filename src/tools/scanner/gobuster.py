@@ -23,7 +23,7 @@ class GobusterTool(BaseTool):
     phase = ScanPhase.SCANNING
 
     def _build_cmd(self, target: str, **kwargs: Any) -> list[str]:
-        """Build the gobuster command list."""
+        """Build the gobuster command list. Returns (cmd, mode)."""
         mode = kwargs.get("mode", "dir")
         cmd = ["gobuster", mode]
 
