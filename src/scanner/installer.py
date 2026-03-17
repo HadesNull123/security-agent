@@ -223,6 +223,8 @@ class ToolInstaller:
     async def install_tool(self, tool_name: str) -> tuple[bool, str]:
         """
         Install a single tool.
+        For Go tools, tries GitHub Releases binary first (no Go compiler needed),
+        then falls back to `go install`.
 
         Returns:
             (success: bool, message: str)
@@ -237,6 +239,19 @@ class ToolInstaller:
         # Builtin tools don't need installation
         if info.install_method == "builtin":
             return True, f"{tool_name} is a built-in Python tool (always available)."
+
+        # ★ For Go tools: try GitHub Releases binary download first
+        if info.install_method == "go":
+            try:
+                from src.scanner.updater import updater, GITHUB_TOOLS
+                if tool_name in GITHUB_TOOLS:
+                    logger.info(f"Trying GitHub Releases binary for {tool_name}...")
+                    success, msg = await updater.check_and_update(tool_name)
+                    if success and self.is_tool_installed(tool_name):
+                        return True, f"{tool_name} installed via GitHub Releases: {msg}"
+                    logger.info(f"GitHub download failed, falling back to go install: {msg}")
+            except Exception as e:
+                logger.debug(f"GitHub download attempt failed: {e}")
 
         prereqs = self.check_prerequisites()
         if not prereqs.get(info.install_method, False):

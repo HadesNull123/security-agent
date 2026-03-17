@@ -380,8 +380,16 @@ class SecurityAgent:
         }
         if self.config.zap.api_key:
             self.scanner_tools["zap"] = ZAPTool(self.config.zap)
+        else:
+            logger.info("ℹ️ ZAP not configured (set ZAP_API_KEY in .env)")
+
         if self.config.acunetix.api_url and self.config.acunetix.api_key:
             self.scanner_tools["acunetix"] = AcunetixTool(self.config.acunetix)
+        else:
+            logger.warning(
+                "⚠️ Acunetix NOT registered — need ACUNETIX_API_URL and ACUNETIX_API_KEY in .env. "
+                f"Current: api_url={bool(self.config.acunetix.api_url)}, api_key={bool(self.config.acunetix.api_key)}"
+            )
 
         self.exploit_tools: dict[str, Any] = {
             "sqlmap": SQLMapTool(),
@@ -391,12 +399,25 @@ class SecurityAgent:
         }
         if self.config.metasploit.rpc_password:
             self.exploit_tools["metasploit"] = MetasploitTool(self.config.metasploit)
+        else:
+            logger.info("ℹ️ Metasploit not configured (set MSF_RPC_PASS in .env)")
 
     def _get_available_tools(self, tool_dict: dict[str, Any]) -> dict[str, Any]:
         available = {}
+        unavailable = []
         for name, tool in tool_dict.items():
             if tool.is_available():
                 available[name] = tool
+            else:
+                unavailable.append(name)
+        if unavailable:
+            logger.warning(
+                f"⚠️ Tools NOT available (not installed or not configured): "
+                f"{', '.join(unavailable)}"
+            )
+        logger.info(
+            f"✅ Available tools ({len(available)}): {', '.join(available.keys()) or 'NONE'}"
+        )
         return available
 
     async def _auto_install_missing(self) -> dict[str, tuple[bool, str]]:
@@ -644,6 +665,10 @@ class SecurityAgent:
             logger.warning(f"No tools available for phase {phase.value}. Skipping.")
             return None
 
+        # Log registered tools for debugging
+        tool_names = [t.name for t in tools]
+        logger.info(f"Phase {phase.value}: registering {len(tools)} tools: {', '.join(tool_names)}")
+
         prompt = ChatPromptTemplate.from_messages([
             ("system", SYSTEM_PROMPT),
             MessagesPlaceholder(variable_name="chat_history", optional=True),
@@ -659,7 +684,7 @@ class SecurityAgent:
         return AgentExecutor(
             agent=agent,
             tools=tools,
-            verbose=False,
+            verbose=True,
             max_iterations=max_iter,
             handle_parsing_errors=True,
             return_intermediate_steps=True,
@@ -672,6 +697,20 @@ class SecurityAgent:
         await self.db.connect()
         self.memory.connect()
 
+        # ★ Step 1: Auto-update tools from GitHub Releases (fast, no Go needed)
+        try:
+            from src.scanner.updater import updater
+            logger.info("🔄 Checking for tool updates from GitHub Releases...")
+            update_results = await updater.update_all()
+            for tool_name, (success, msg) in update_results.items():
+                if success:
+                    logger.info(f"  ✅ {tool_name}: {msg}")
+                else:
+                    logger.warning(f"  ⚠️ {tool_name}: {msg}")
+        except Exception as e:
+            logger.warning(f"Auto-update check failed (continuing anyway): {e}")
+
+        # ★ Step 2: Fallback — install any still-missing tools via go/pip/apt
         install_results = await self._auto_install_missing()
         for tool_name, (success, msg) in install_results.items():
             if success:
@@ -726,9 +765,11 @@ class SecurityAgent:
             # Phase 3: Analysis (LLM-only)
             await self._run_analysis(targets)
 
-            # Phase 4: Exploitation (skip in quick mode)
-            if mode != "quick" and self.session.findings:
+            # Phase 4: Exploitation (runs at ALL levels if there are findings)
+            if self.session.findings:
                 await self._run_phase(ScanPhase.EXPLOITATION, targets)
+            else:
+                logger.info("Skipping exploitation — no findings to exploit")
 
             # Phase 5: Report
             if self.ui:

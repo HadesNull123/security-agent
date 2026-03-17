@@ -38,9 +38,16 @@ class AcunetixTool(BaseTool):
     def __init__(self, config: AcunetixConfig, **kwargs):
         super().__init__()
         self.config = config
-        self.base_url = config.api_url.rstrip("/")
+        # Normalize: strip trailing /api/v1, /api, or / from the URL
+        base = config.api_url.rstrip("/")
+        if base.endswith("/api/v1"):
+            base = base[:-7]
+        elif base.endswith("/api"):
+            base = base[:-4]
+        self.base_url = base
         self.api_key = config.api_key
         self.verify_ssl = config.verify_ssl
+        logger.info(f"Acunetix initialized: base_url={self.base_url}")
 
     def is_available(self) -> bool:
         return bool(self.config.api_url and self.config.api_key)

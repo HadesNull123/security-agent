@@ -223,10 +223,26 @@ Generate a professional penetration testing report with these sections:
 1. Executive Summary (brief, for management)
 2. Scope and Methodology
 3. Findings Summary (table with severity, status)
-4. Detailed Findings (each with description, evidence, impact, remediation)
+4. Detailed Findings — for EACH finding you MUST include:
+   - Description (what the vulnerability is)
+   - Evidence (proof from tool output)
+   - Impact (what an attacker could achieve)
+   - **Remediation** (step-by-step fix instructions with code examples where applicable)
+   - Risk Rating (CVSS score if available)
 5. Exploitation Results
-6. Recommendations (prioritized)
-7. Appendix (raw tool outputs if relevant)
+6. **Remediation Priority** — ordered list of fixes ranked by severity and ease of implementation:
+   - IMMEDIATE actions (can fix today)
+   - SHORT-TERM actions (fix within 1 week)
+   - LONG-TERM actions (architectural changes)
+7. Recommendations (prioritized)
+8. Appendix (raw tool outputs if relevant)
+
+⚠️ CRITICAL: Every finding MUST have a specific, actionable remediation. Do NOT use generic statements like "fix this vulnerability."
+Instead, provide concrete steps such as:
+- Configuration changes (exact config lines)
+- Code fixes (before/after code examples)
+- Header additions (exact header values)
+- Library upgrades (exact versions)
 
 Use markdown format. Be thorough but concise.
 """
