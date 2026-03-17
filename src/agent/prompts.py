@@ -208,6 +208,35 @@ After successful exploitation, use `add_finding` to update or add exploitation e
 Findings to exploit: {findings_detail}
 """
 
+POST_EXPLOIT_VERIFICATION_PROMPT = """You are in the POST-EXPLOITATION VERIFICATION phase.
+Your job is to RE-CHECK and VALIDATE all findings after exploitation tools have run.
+
+Target: {target}
+
+## Current Findings (before verification):
+{all_findings}
+
+## Exploitation Results:
+{exploit_results}
+
+## Your Tasks:
+1. **Validate each finding**: Is there real evidence? Did exploitation succeed or fail?
+2. **Remove false positives**: If a finding has NO evidence or exploitation FAILED, mark it with severity=info and add "[UNCONFIRMED]" to the title
+3. **Confirm true positives**: If exploitation SUCCEEDED, ensure the finding has:
+   - Accurate severity (upgrade if exploit proved higher impact than initially assessed)
+   - Complete evidence from the exploitation output
+   - Specific remediation steps
+4. **Consolidate duplicates**: Merge findings that describe the same vulnerability
+5. **Add exploitation status**: Update each finding description with:
+   - "Exploitation Status: CONFIRMED" if exploit succeeded
+   - "Exploitation Status: UNCONFIRMED" if exploit was not attempted or failed
+
+For each finding that needs updating, call `add_finding` with the corrected information.
+For findings that are false positives, call `add_finding` with severity="info" and title prefixed with "[FALSE POSITIVE]".
+
+Be thorough — only CONFIRMED vulnerabilities with real evidence should remain as high/critical.
+"""
+
 REPORTING_PROMPT = """You are in the REPORTING phase. Generate a comprehensive penetration test report.
 
 Target: {target}

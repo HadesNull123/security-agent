@@ -3,14 +3,17 @@ Console UI — Rich terminal interface for real-time scan progress.
 
 Provides a live-updating dashboard showing:
 - Current phase with progress indicator
-- Multi-panel grid: each tool gets its own output box (3 cols per row)
+- Multi-panel grid: each tool gets its own output box
 - Findings discovered so far
 - Token usage and elapsed time
+
+Design: All components are terminal-width-aware to prevent table overflow.
 """
 
 from __future__ import annotations
 
 import math
+import os
 import time
 from collections import deque
 from datetime import datetime
@@ -18,7 +21,6 @@ from typing import Any
 
 from rich.columns import Columns
 from rich.console import Console, Group
-from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
 from rich.progress import (
@@ -35,11 +37,12 @@ console = Console()
 
 # Phase display data
 PHASE_INFO = {
-    "recon": {"icon": "🔍", "label": "RECONNAISSANCE", "color": "cyan", "order": 1},
-    "scanning": {"icon": "🛡️", "label": "SCANNING", "color": "yellow", "order": 2},
-    "analysis": {"icon": "🧠", "label": "ANALYSIS", "color": "magenta", "order": 3},
-    "exploitation": {"icon": "⚔️", "label": "EXPLOITATION", "color": "red", "order": 4},
-    "reporting": {"icon": "📝", "label": "REPORTING", "color": "green", "order": 5},
+    "recon": {"icon": "🔍", "label": "RECON", "color": "cyan", "order": 1},
+    "scanning": {"icon": "🛡️", "label": "SCAN", "color": "yellow", "order": 2},
+    "analysis": {"icon": "🧠", "label": "ANALY", "color": "magenta", "order": 3},
+    "exploitation": {"icon": "⚔️", "label": "EXPLT", "color": "red", "order": 4},
+    "verification": {"icon": "✅", "label": "VERIF", "color": "bright_cyan", "order": 5},
+    "reporting": {"icon": "📝", "label": "REPRT", "color": "green", "order": 6},
 }
 
 SEVERITY_COLORS = {
@@ -51,7 +54,15 @@ SEVERITY_COLORS = {
 }
 
 # Max output lines per tool panel
-TOOL_LOG_LINES = 6
+TOOL_LOG_LINES = 5
+
+
+def _term_width() -> int:
+    """Get terminal width, with a sensible minimum."""
+    try:
+        return max(os.get_terminal_size().columns, 60)
+    except OSError:
+        return 100
 
 
 class ScanUI:
@@ -85,7 +96,7 @@ class ScanUI:
         # State
         self.current_phase: str = ""
         self.completed_phases: list[str] = []
-        self.tool_status: dict[str, dict[str, Any]] = {}  # name -> {status, time, summary}
+        self.tool_status: dict[str, dict[str, Any]] = {}
         self.active_tool: str | None = None
         self.findings_summary: dict[str, int] = {
             "critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0,
@@ -93,21 +104,21 @@ class ScanUI:
         self.total_findings: int = 0
         self.tokens_used: int = 0
         self.log_messages: list[str] = []
-        self.max_log_lines = 6
+        self.max_log_lines = 5
 
-        # ★ Per-tool output lines for multi-panel display
+        # Per-tool output lines for multi-panel display
         self.tool_outputs: dict[str, deque[str]] = {}
-        self.phase_tools: list[str] = []  # Ordered list of tools for current phase
+        self.phase_tools: list[str] = []
 
         # Rich components
         self._progress = Progress(
             SpinnerColumn(),
             TextColumn("[bold]{task.description}"),
-            BarColumn(bar_width=20),
+            BarColumn(bar_width=15),
             TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
             TimeElapsedColumn(),
         )
-        self._phase_task = self._progress.add_task("Initializing...", total=5)
+        self._phase_task = self._progress.add_task("Initializing...", total=6)
         self._live: Live | None = None
 
     def start(self) -> None:
@@ -161,7 +172,7 @@ class ScanUI:
         self._update()
 
     def register_phase_tools(self, tool_names: list[str]) -> None:
-        """Register the list of available tools for the current phase (for grid layout)."""
+        """Register the list of available tools for the current phase."""
         self.phase_tools = tool_names
         for name in tool_names:
             if name not in self.tool_outputs:
@@ -196,9 +207,12 @@ class ScanUI:
         """Add a line of output to a tool's panel."""
         if tool_name not in self.tool_outputs:
             self.tool_outputs[tool_name] = deque(maxlen=TOOL_LOG_LINES)
-        # Truncate long lines
-        if len(line) > 120:
-            line = line[:117] + "..."
+
+        # Truncate long lines based on available panel width
+        tw = _term_width()
+        max_line = max(tw // 3 - 8, 30)  # Panel is ~1/3 of terminal width minus borders
+        if len(line) > max_line:
+            line = line[:max_line - 3] + "..."
         self.tool_outputs[tool_name].append(line)
         self._update()
 
@@ -209,14 +223,12 @@ class ScanUI:
             self.tool_status[tool_name].update({
                 "status": "done" if success else "failed",
                 "elapsed": elapsed,
-                "summary": result_summary[:80],
+                "summary": result_summary[:60],
             })
         if self.active_tool == tool_name:
             self.active_tool = None
 
-        # Clear "Starting..." line and add completion line
         if tool_name in self.tool_outputs:
-            # Remove the "Starting..." placeholder
             filtered = deque(
                 (line for line in self.tool_outputs[tool_name]
                  if "Starting..." not in line),
@@ -227,11 +239,11 @@ class ScanUI:
             status_icon = "✅" if success else "❌"
             elapsed = self.tool_status.get(tool_name, {}).get("elapsed", 0)
             self.tool_outputs[tool_name].append(
-                f"[{'green' if success else 'red'}]{status_icon} Done ({elapsed:.1f}s) {result_summary[:50]}[/]"
+                f"[{'green' if success else 'red'}]{status_icon} Done ({elapsed:.1f}s) {result_summary[:40]}[/]"
             )
 
         status_icon = "✅" if success else "❌"
-        self.log(f"{status_icon} {tool_name}: {result_summary[:50]}")
+        self.log(f"{status_icon} {tool_name}: {result_summary[:40]}")
         self._update()
 
     # ── Findings ────────────────────────────────────────────
@@ -242,7 +254,7 @@ class ScanUI:
         if sev in self.findings_summary:
             self.findings_summary[sev] += 1
         self.total_findings += 1
-        self.log(f"🚨 [{sev.upper()}] {title[:50]}")
+        self.log(f"🚨 [{sev.upper()}] {title[:40]}")
         self._update()
 
     # ── Token Tracking ──────────────────────────────────────
@@ -257,14 +269,14 @@ class ScanUI:
     def log(self, message: str) -> None:
         """Add a log message to the activity feed."""
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self.log_messages.append(f"[dim]{timestamp}[/dim] {message}")
+        self.log_messages.append(f"[dim]{timestamp}[/dim] {message[:80]}")
         if len(self.log_messages) > self.max_log_lines:
             self.log_messages = self.log_messages[-self.max_log_lines:]
 
     # ── Layout Building ─────────────────────────────────────
 
     def _build_layout(self) -> Panel:
-        """Build the complete dashboard layout."""
+        """Build the complete dashboard layout. All widths adapt to terminal."""
         elements = [
             self._build_header(),
             self._build_phase_progress(),
@@ -280,71 +292,102 @@ class ScanUI:
             padding=(0, 1),
         )
 
-    def _build_header(self) -> Text:
-        """Build header with target and mode info."""
+    def _build_header(self) -> Table:
+        """Build header with target and mode info — uses a table to prevent overflow."""
         elapsed = time.time() - self.start_time
         mins, secs = divmod(int(elapsed), 60)
-        target_str = ", ".join(self.targets[:3])
-        if len(self.targets) > 3:
-            target_str += f" (+{len(self.targets) - 3} more)"
 
-        header = Text()
-        header.append(f"🎯 Target: ", style="bold")
-        header.append(f"{target_str}", style="cyan")
-        header.append(f"  │  📋 Mode: ", style="bold")
-        header.append(f"{self.mode.upper()}", style="yellow")
-        header.append(f"  │  ⏱️ {mins:02d}:{secs:02d}", style="green")
-        header.append(f"  │  🔤 ~{self.tokens_used:,} tokens", style="dim")
-        return header
+        # Truncate long target strings
+        tw = _term_width()
+        max_target = max(tw - 50, 20)
+        target_str = ", ".join(self.targets[:2])
+        if len(self.targets) > 2:
+            target_str += f" (+{len(self.targets) - 2})"
+        if len(target_str) > max_target:
+            target_str = target_str[:max_target - 3] + "..."
+
+        tbl = Table(show_header=False, show_edge=False, box=None, pad_edge=False, expand=True)
+        tbl.add_column(ratio=5, no_wrap=True, overflow="ellipsis")
+        tbl.add_column(ratio=1, no_wrap=True, justify="right")
+        tbl.add_row(
+            f"🎯 [bold]Target:[/bold] [cyan]{target_str}[/cyan]  │  📋 [bold]{self.mode.upper()}[/bold]",
+            f"⏱️ {mins:02d}:{secs:02d}  🔤 ~{self.tokens_used:,}",
+        )
+        return tbl
 
     def _build_phase_progress(self) -> Panel:
-        """Build phase progress bar."""
-        phase_line = Text()
-        for name, info in PHASE_INFO.items():
-            icon = info["icon"]
-            label = info["label"][:5]
-            if name in self.completed_phases:
-                phase_line.append(f" ✅{label} ", style="green")
-            elif name == self.current_phase:
-                phase_line.append(f" ▶ {label} ", style=f"bold {info['color']}")
-            else:
-                phase_line.append(f" ○ {label} ", style="dim")
-            phase_line.append("→", style="dim")
-        phase_line.append(" 🏁", style="dim")
+        """Build phase progress bar — fits all phases on one line using short labels."""
+        tw = _term_width()
+        # Calculate how much space each phase gets
+        n_phases = len(PHASE_INFO)
+        # Use just icons + short label, no arrows if terminal is narrow
+        use_arrows = tw > 80
 
-        return Panel(phase_line, title="Phase Progress", border_style="blue", height=3)
+        phase_line = Text()
+        for i, (name, info) in enumerate(PHASE_INFO.items()):
+            icon = info["icon"]
+            label = info["label"][:4]  # Max 4 chars
+
+            if name in self.completed_phases:
+                phase_line.append(f"✅{label}", style="green")
+            elif name == self.current_phase:
+                phase_line.append(f"▶{label}", style=f"bold {info['color']}")
+            else:
+                phase_line.append(f"○{label}", style="dim")
+
+            if i < n_phases - 1:
+                if use_arrows:
+                    phase_line.append("→", style="dim")
+                else:
+                    phase_line.append(" ", style="dim")
+
+        return Panel(phase_line, title="Progress", border_style="blue", height=3)
 
     def _build_tools_grid(self) -> Panel:
         """
-        Build a multi-panel grid where each tool gets its own output box.
-        Layout: 3 columns per row, dynamically sized based on tool count.
+        Build multi-panel grid. Panel width adapts to terminal.
+        Columns: 2 for narrow terminals, 3 for wider ones.
         """
         tools_to_show = self.phase_tools if self.phase_tools else list(self.tool_status.keys())
 
         if not tools_to_show:
             return Panel(
                 Text("Waiting for tools...", style="dim"),
-                title="🔧 Tool Execution Grid",
+                title="🔧 Tools",
                 border_style="dim",
-                height=5,
+                height=4,
             )
 
-        # Build individual tool panels
+        tw = _term_width()
+        # Decide columns count based on terminal width
+        if tw >= 140:
+            n_cols = 4
+        elif tw >= 100:
+            n_cols = 3
+        elif tw >= 70:
+            n_cols = 2
+        else:
+            n_cols = 1
+
+        # Panel width = terminal / n_cols minus outer panel borders (~6 chars)
+        panel_w = max((tw - 6) // n_cols, 25)
+        # Line truncation inside panels
+        max_line_len = panel_w - 4  # 4 for panel borders
+
         panels = []
         for name in tools_to_show:
             status_info = self.tool_status.get(name, {"status": "waiting"})
             status = status_info.get("status", "waiting")
 
-            # Panel border style based on status
             if status == "running":
                 border = "bold yellow"
                 status_icon = "⏳"
                 elapsed = time.time() - status_info.get("start_time", time.time())
-                title_extra = f" ({elapsed:.0f}s)"
+                title_extra = f" {elapsed:.0f}s"
             elif status == "done":
                 border = "green"
                 status_icon = "✅"
-                title_extra = f" ({status_info.get('elapsed', 0):.1f}s)"
+                title_extra = f" {status_info.get('elapsed', 0):.1f}s"
             elif status == "failed":
                 border = "red"
                 status_icon = "❌"
@@ -354,7 +397,6 @@ class ScanUI:
                 status_icon = "○"
                 title_extra = ""
 
-            # Get tool output lines
             output_lines = list(self.tool_outputs.get(name, []))
             if not output_lines:
                 if status == "waiting":
@@ -362,39 +404,59 @@ class ScanUI:
                 elif status == "running":
                     output_lines = ["[yellow]Running...[/yellow]"]
 
-            # Pad to fixed height
-            while len(output_lines) < TOOL_LOG_LINES:
-                output_lines.append("")
+            # Truncate each line to fit panel
+            truncated = []
+            for line in output_lines[:TOOL_LOG_LINES]:
+                # Strip Rich markup for length calc, but keep markup in output
+                plain = Text.from_markup(line).plain if "[" in line else line
+                if len(plain) > max_line_len:
+                    # Simple truncation (may break some markup, but safer)
+                    truncated.append(line[:max_line_len - 3] + "...")
+                else:
+                    truncated.append(line)
 
-            content = "\n".join(output_lines[:TOOL_LOG_LINES])
+            # Pad to fixed height
+            while len(truncated) < TOOL_LOG_LINES:
+                truncated.append("")
+
+            content = "\n".join(truncated)
+
+            # Truncate tool name for title
+            display_name = name[:panel_w - 12] if len(name) > panel_w - 12 else name
 
             panel = Panel(
                 content,
-                title=f"{status_icon} [bold]{name}[/bold]{title_extra}",
+                title=f"{status_icon} [bold]{display_name}[/bold]{title_extra}",
                 border_style=border,
-                width=50,
+                width=panel_w,
                 height=TOOL_LOG_LINES + 2,
             )
             panels.append(panel)
 
-        # Use Rich Columns for automatic grid layout (3 per row)
-        grid = Columns(panels, equal=True, expand=True)
+        grid = Columns(panels, equal=False, expand=True)
 
         return Panel(
             grid,
-            title=f"🔧 Tool Execution Grid ({len(tools_to_show)} tools)",
+            title=f"🔧 Tools ({len(tools_to_show)})",
             border_style="blue",
         )
 
     def _build_findings_bar(self) -> Panel:
-        """Build findings summary bar."""
-        findings_text = Text()
-        findings_text.append(f"Total: {self.total_findings}  │  ", style="bold")
+        """Build findings summary — uses a compact table layout."""
+        tbl = Table(show_header=False, show_edge=False, box=None, pad_edge=False, expand=True)
+        tbl.add_column(no_wrap=True, width=12)
+        for _ in range(5):
+            tbl.add_column(no_wrap=True, width=8)
+
+        # Build styled cells
+        cells = [f"[bold]Total: {self.total_findings}[/bold]"]
         for sev, count in self.findings_summary.items():
             color = SEVERITY_COLORS.get(sev, "white")
-            findings_text.append(f"  {sev.upper()}: ", style="bold")
-            findings_text.append(f"{count}", style=color)
-        return Panel(findings_text, title="🚨 Findings", border_style="red", height=3)
+            short = sev[:4].upper()  # CRIT, HIGH, MEDI, LOW, INFO
+            cells.append(f"[{color}]{short}:{count}[/{color}]")
+
+        tbl.add_row(*cells)
+        return Panel(tbl, title="🚨 Findings", border_style="red", height=3)
 
     def _build_activity_log(self) -> Panel:
         """Build scrolling activity log."""
@@ -402,10 +464,10 @@ class ScanUI:
             log_text = "\n".join(self.log_messages)
         else:
             log_text = "[dim]Waiting for activity...[/dim]"
-        return Panel(log_text, title="Activity Log", border_style="dim", height=self.max_log_lines + 2)
+        return Panel(log_text, title="Log", border_style="dim", height=self.max_log_lines + 2)
 
     def _build_footer(self) -> Text:
-        """Build footer with instructions."""
+        """Build footer."""
         footer = Text()
-        footer.append("Press Ctrl+C to abort scan gracefully", style="dim italic")
+        footer.append("Ctrl+C to abort", style="dim italic")
         return footer

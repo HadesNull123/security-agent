@@ -37,13 +37,13 @@ WORDLISTS = {
     },
     "dir_medium": {
         "path": WORDLIST_DIR / "dir_medium.txt",
-        "url": f"{SECLISTS_BASE}/Discovery/Web-Content/directory-list-2.3-medium.txt",
+        "url": f"{SECLISTS_BASE}/Discovery/Web-Content/DirBuster-2007_directory-list-2.3-medium.txt",
         "description": "~220,000 directory names (normal scan)",
         "size_hint": "medium",
     },
     "dir_large": {
         "path": WORDLIST_DIR / "dir_large.txt",
-        "url": f"{SECLISTS_BASE}/Discovery/Web-Content/directory-list-2.3-big.txt",
+        "url": f"{SECLISTS_BASE}/Discovery/Web-Content/DirBuster-2007_directory-list-2.3-big.txt",
         "description": "~1,270,000 directory names (deep scan)",
         "size_hint": "large",
     },
@@ -57,8 +57,8 @@ WORDLISTS = {
     # Backup files
     "backup_files": {
         "path": WORDLIST_DIR / "backup_files.txt",
-        "url": f"{SECLISTS_BASE}/Discovery/Web-Content/backup-files.txt",
-        "description": "Backup file extensions (.bak, .old, .orig)",
+        "url": f"{SECLISTS_BASE}/Discovery/Web-Content/quickhits.txt",
+        "description": "~2,500 common sensitive paths and backup files",
         "size_hint": "small",
     },
     # DNS subdomains

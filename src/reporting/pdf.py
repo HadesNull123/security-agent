@@ -1,22 +1,18 @@
 """
 PDF Report Generator — Professional penetration testing report.
 
-Features:
-- Cover page with branding, target info, scan summary
-- Executive Summary with risk gauge
-- Severity distribution chart (bar)
-- Table of Contents
-- Detailed findings: description, impact analysis, evidence, remediation steps
-- Remediation Priority Roadmap (Immediate / Short-Term / Long-Term)
-- Tool Execution Log
-- Footer with page numbers
+Key design principles:
+- ALL table cells use Paragraph() for automatic word-wrapping (no overflow)
+- Full results included: no aggressive truncation
+- Summary table includes evidence snippet
+- Each finding on its own section with full detail
+- KeepTogether prevents mid-finding page breaks
 """
 
 from __future__ import annotations
 
 import logging
-import re
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +28,6 @@ ACCENT_BLUE  = "#4a90d9"
 RED          = "#c0392b"
 ORANGE       = "#e67e22"
 YELLOW       = "#f39c12"
-LIGHT_BLUE   = "#2980b9"
 GREEN        = "#27ae60"
 GRAY         = "#7f8c8d"
 LIGHT_GRAY   = "#ecf0f1"
@@ -55,6 +50,10 @@ SEV_BG = {
     "info":     "#f4f6f7",
 }
 
+# Available page content width for A4 with 20mm margins each side
+# A4 width = 595pt, margins = 20mm*2 = ~113pt → usable ~482pt
+PAGE_W = 480
+
 
 def _h(hex_color: str):
     """Convert hex string to reportlab HexColor."""
@@ -62,8 +61,8 @@ def _h(hex_color: str):
     return colors.HexColor(hex_color)
 
 
-def _safe(text: str, max_len: int = 5000) -> str:
-    """Escape HTML for reportlab Paragraph and truncate."""
+def _safe(text: str, max_len: int = 10000) -> str:
+    """Escape HTML for reportlab Paragraph. Preserves newlines as <br/>."""
     if not text:
         return ""
     text = str(text)[:max_len]
@@ -76,23 +75,15 @@ def _safe(text: str, max_len: int = 5000) -> str:
     )
 
 
-def _numbered_list(items: list[str], style) -> list:
-    """Return a list of Paragraph elements for a numbered list."""
+def _p(text: str, style, max_len: int = 10000):
+    """Create a Paragraph (safe for use inside Table cells — enables word wrap)."""
     from reportlab.platypus import Paragraph
-    result = []
-    for i, item in enumerate(items, 1):
-        result.append(Paragraph(f"&nbsp;&nbsp;<b>{i}.</b> {_safe(item)}", style))
-    return result
-
-
-class _NumberedCanvas:
-    """Canvas with page numbers."""
-    pass
+    return Paragraph(_safe(text, max_len), style)
 
 
 def _build_styles():
-    """Build all paragraph styles."""
-    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY, TA_RIGHT
+    """Build all paragraph styles used in the report."""
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 
     base = getSampleStyleSheet()
@@ -101,226 +92,180 @@ def _build_styles():
         return ParagraphStyle(name, parent=base[parent], **kw)
 
     return {
-        "cover_title": s("cover_title", "Normal",
-            fontSize=32, textColor=_h(WHITE), fontName="Helvetica-Bold",
-            alignment=TA_CENTER, spaceAfter=8, leading=38),
-        "cover_sub": s("cover_sub", "Normal",
-            fontSize=13, textColor=_h(ACCENT_BLUE), fontName="Helvetica",
+        "cover_title": s("cover_title",
+            fontSize=28, textColor=_h(WHITE), fontName="Helvetica-Bold",
+            alignment=TA_CENTER, spaceAfter=8, leading=34),
+        "cover_sub": s("cover_sub",
+            fontSize=12, textColor=_h(ACCENT_BLUE), fontName="Helvetica",
             alignment=TA_CENTER, spaceAfter=4),
-        "cover_label": s("cover_label", "Normal",
-            fontSize=10, textColor=_h(LIGHT_GRAY), fontName="Helvetica",
-            alignment=TA_LEFT),
-        "cover_value": s("cover_value", "Normal",
-            fontSize=10, textColor=_h(WHITE), fontName="Helvetica-Bold",
-            alignment=TA_LEFT),
-
-        "section": s("section", "Normal",
-            fontSize=16, textColor=_h(NAVY), fontName="Helvetica-Bold",
-            spaceBefore=24, spaceAfter=10, leading=20,
-            borderWidth=0, leftIndent=0),
-        "subsection": s("subsection", "Normal",
-            fontSize=12, textColor=_h(BLUE), fontName="Helvetica-Bold",
-            spaceBefore=14, spaceAfter=6),
-        "body": s("body", "Normal",
-            fontSize=10, textColor=_h(BLACK), leading=15,
-            alignment=TA_JUSTIFY, spaceAfter=6),
-        "body_left": s("body_left", "Normal",
-            fontSize=10, textColor=_h(BLACK), leading=15),
-        "small": s("small", "Normal",
-            fontSize=8, textColor=_h(GRAY), leading=12),
-        "code": s("code", "Normal",
-            fontSize=8, fontName="Courier", textColor=_h(BLACK),
-            backColor=_h("#f8f9fa"), leftIndent=10, rightIndent=10,
-            spaceBefore=4, spaceAfter=4, leading=12,
-            borderWidth=1, borderColor=_h("#dee2e6"), borderPadding=6),
-        "label_key": s("label_key", "Normal",
-            fontSize=9, fontName="Helvetica-Bold", textColor=_h(NAVY)),
-        "label_val": s("label_val", "Normal",
-            fontSize=9, textColor=_h(BLACK)),
-        "toc_entry": s("toc_entry", "Normal",
+        "section": s("section",
+            fontSize=15, textColor=_h(NAVY), fontName="Helvetica-Bold",
+            spaceBefore=20, spaceAfter=8, leading=18),
+        "subsection": s("subsection",
+            fontSize=11, textColor=_h(BLUE), fontName="Helvetica-Bold",
+            spaceBefore=10, spaceAfter=4),
+        "body": s("body",
+            fontSize=9, textColor=_h(BLACK), leading=13,
+            alignment=TA_JUSTIFY, spaceAfter=4),
+        "body_sm": s("body_sm",
+            fontSize=8, textColor=_h(BLACK), leading=11, spaceAfter=2),
+        "cell": s("cell",
+            fontSize=7, textColor=_h(BLACK), leading=10),
+        "cell_bold": s("cell_bold",
+            fontSize=7, textColor=_h(BLACK), leading=10, fontName="Helvetica-Bold"),
+        "cell_white": s("cell_white",
+            fontSize=7, textColor=_h(WHITE), leading=10, fontName="Helvetica-Bold"),
+        "cell_code": s("cell_code",
+            fontSize=6, textColor=_h(BLACK), leading=9, fontName="Courier"),
+        "small": s("small",
+            fontSize=7, textColor=_h(GRAY), leading=10),
+        "code": s("code",
+            fontSize=7, fontName="Courier", textColor=_h(BLACK),
+            backColor=_h("#f8f9fa"), leftIndent=6, rightIndent=6,
+            spaceBefore=3, spaceAfter=3, leading=10,
+            borderWidth=0.5, borderColor=_h("#dee2e6"), borderPadding=4),
+        "remediation": s("remediation",
+            fontSize=9, textColor=_h(BLACK), leading=13,
+            backColor=_h("#f0faf4"), leftIndent=6, rightIndent=6,
+            borderWidth=0.5, borderColor=_h(GREEN), borderPadding=4),
+        "impact": s("impact",
+            fontSize=9, textColor=_h(BLACK), leading=13,
+            backColor=_h("#fff8e1"), leftIndent=6, rightIndent=6,
+            borderWidth=0.5, borderColor=_h(YELLOW), borderPadding=4),
+        "toc_entry": s("toc_entry",
             fontSize=10, textColor=_h(BLUE), leading=16),
-        "finding_title": s("finding_title", "Normal",
-            fontSize=13, fontName="Helvetica-Bold", textColor=_h(WHITE),
-            leading=16),
-        "remediation": s("remediation", "Normal",
-            fontSize=10, textColor=_h(BLACK), leading=14,
-            backColor=_h("#f0faf4"), leftIndent=8, rightIndent=8,
-            borderWidth=1, borderColor=_h(GREEN), borderPadding=6),
-        "impact": s("impact", "Normal",
-            fontSize=10, textColor=_h(BLACK), leading=14,
-            backColor=_h("#fff8e1"), leftIndent=8, rightIndent=8,
-            borderWidth=1, borderColor=_h(YELLOW), borderPadding=6),
-        "footer": s("footer", "Normal",
-            fontSize=8, textColor=_h(GRAY), alignment=TA_CENTER),
+        "footer": s("footer",
+            fontSize=7, textColor=_h(GRAY), alignment=TA_CENTER),
     }
 
 
-def _severity_badge(severity: str, styles) -> "Paragraph":
-    """Return a severity badge paragraph."""
-    from reportlab.platypus import Paragraph
-    sev = severity.lower()
-    color = SEV_COLORS.get(sev, GRAY)
-    label = sev.upper()
-    return Paragraph(
-        f'<font color="{color}"><b>● {label}</b></font>',
-        styles["body_left"],
-    )
-
+# ─── Page Header & Footer ────────────────────────────────────
 
 def _page_header_footer(canvas, doc):
-    """Draw header and footer on each page."""
+    """Draw header bar (pages 2+) and footer (all pages)."""
     from reportlab.lib.units import mm
     canvas.saveState()
     w, h = doc.pagesize
 
-    # Header bar (only on non-cover pages)
     if doc.page > 1:
         canvas.setFillColor(_h(DARK_NAVY))
-        canvas.rect(0, h - 18*mm, w, 18*mm, fill=True, stroke=False)
-        canvas.setFont("Helvetica-Bold", 9)
+        canvas.rect(0, h - 15*mm, w, 15*mm, fill=True, stroke=False)
+        canvas.setFont("Helvetica-Bold", 8)
         canvas.setFillColor(_h(WHITE))
-        canvas.drawString(20*mm, h - 12*mm, "🛡️  SECURITY ASSESSMENT REPORT  |  CONFIDENTIAL")
-        canvas.setFont("Helvetica", 8)
+        canvas.drawString(20*mm, h - 10*mm, "SECURITY ASSESSMENT REPORT  |  CONFIDENTIAL")
+        canvas.setFont("Helvetica", 7)
         canvas.setFillColor(_h(ACCENT_BLUE))
-        canvas.drawRightString(w - 20*mm, h - 12*mm, datetime.utcnow().strftime("%Y-%m-%d"))
+        canvas.drawRightString(w - 20*mm, h - 10*mm, datetime.utcnow().strftime("%Y-%m-%d"))
 
-    # Footer
     canvas.setFillColor(_h(LIGHT_GRAY))
-    canvas.rect(0, 0, w, 12*mm, fill=True, stroke=False)
-    canvas.setFont("Helvetica", 8)
+    canvas.rect(0, 0, w, 10*mm, fill=True, stroke=False)
+    canvas.setFont("Helvetica", 7)
     canvas.setFillColor(_h(GRAY))
-    canvas.drawCentredString(w / 2, 4*mm, f"Page {doc.page}  •  Generated by Security Agent  •  CONFIDENTIAL")
+    canvas.drawCentredString(w / 2, 3*mm, f"Page {doc.page}  |  Security Agent  |  CONFIDENTIAL")
     canvas.restoreState()
 
 
+# ─── Cover Page ───────────────────────────────────────────────
+
 def _draw_cover(story, session, targets, styles, pagesize):
-    """Build the cover page."""
+    """Build cover page with full datetime and scan metadata."""
     from reportlab.lib.units import mm
     from reportlab.platypus import Spacer, Paragraph, Table, TableStyle, HRFlowable, PageBreak
-    W, H = pagesize
 
-    # Dark background — we fake it with a full-width colored table
-    cover_bg = Table(
-        [[""]],
-        colWidths=[W - 40*mm],
-        rowHeights=[H * 0.45],
-    )
-    cover_bg.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), _h(DARK_NAVY)),
-        ("TOPPADDING", (0, 0), (-1, -1), 30),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 30),
-    ]))
-
-    story.append(Spacer(1, 40))
-    story.append(Paragraph("🛡️  SECURITY ASSESSMENT REPORT", styles["cover_title"]))
-    story.append(Paragraph("AI-Powered Penetration Testing", styles["cover_sub"]))
-    story.append(Spacer(1, 8))
-    story.append(HRFlowable(width="60%", thickness=2, color=_h(ACCENT_BLUE), spaceAfter=20))
-
-    # Cover info table — build comprehensive datetime info
-    from datetime import timezone, timedelta
-    tz_vn = timezone(timedelta(hours=7))  # Vietnam UTC+7
+    tz_vn = timezone(timedelta(hours=7))
     now_utc = datetime.utcnow()
     now_vn  = datetime.now(tz_vn)
 
-    # Try to get scan start/end times from session
     scan_start = getattr(session, "started_at", None)
     scan_end   = getattr(session, "completed_at", None)
-
-    if isinstance(scan_start, datetime):
-        start_str = scan_start.strftime("%Y-%m-%d %H:%M:%S UTC")
-    else:
-        start_str = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+    start_str  = scan_start.strftime("%Y-%m-%d %H:%M:%S UTC") if isinstance(scan_start, datetime) else now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
 
     if isinstance(scan_end, datetime) and isinstance(scan_start, datetime):
-        duration = scan_end - scan_start
-        total_sec = int(duration.total_seconds())
-        duration_str = f"{total_sec // 3600}h {(total_sec % 3600) // 60}m {total_sec % 60}s"
+        dur = scan_end - scan_start
+        ts = int(dur.total_seconds())
+        duration_str = f"{ts // 3600}h {(ts % 3600) // 60}m {ts % 60}s"
         end_str = scan_end.strftime("%Y-%m-%d %H:%M:%S UTC")
     else:
         end_str = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
         duration_str = "N/A"
 
     sev = session.severity_summary
-    critical_n = sev.get("critical", 0)
-    high_n     = sev.get("high", 0)
-    medium_n   = sev.get("medium", 0)
-    low_n      = sev.get("low", 0)
+    cn, hn, mn, ln = sev.get("critical", 0), sev.get("high", 0), sev.get("medium", 0), sev.get("low", 0)
+    risk = "CRITICAL" if cn else "HIGH" if hn else "MEDIUM" if mn else "LOW" if ln else "INFO"
+    risk_c = SEV_COLORS.get(risk.lower(), GRAY)
 
-    overall_risk = "CRITICAL" if critical_n > 0 else \
-                   "HIGH" if high_n > 0 else \
-                   "MEDIUM" if medium_n > 0 else \
-                   "LOW" if low_n > 0 else "INFORMATIONAL"
-    risk_color = SEV_COLORS.get(overall_risk.lower(), GRAY)
+    story.append(Spacer(1, 30))
+    story.append(Paragraph("SECURITY ASSESSMENT REPORT", styles["cover_title"]))
+    story.append(Paragraph("AI-Powered Penetration Testing", styles["cover_sub"]))
+    story.append(Spacer(1, 6))
+    story.append(HRFlowable(width="50%", thickness=2, color=_h(ACCENT_BLUE), spaceAfter=15))
 
-    cover_data = [
-        ["Target(s)",          targets],
-        ["Report Date (UTC)",  now_utc.strftime("%A, %B %d, %Y")],
-        ["Report Time (UTC)",  now_utc.strftime("%H:%M:%S UTC")],
-        ["Report Time (VN)",   now_vn.strftime("%H:%M:%S UTC+7 (Vietnam)")],
-        ["Scan Started",       start_str],
-        ["Scan Ended",         end_str],
-        ["Scan Duration",      duration_str],
-        ["Session ID",         session.id[:16] if len(session.id) >= 16 else session.id],
-        ["Scan Mode",          getattr(session, "scan_mode", "N/A").upper()],
-        ["Total Findings",     str(len(session.findings))],
-        ["Overall Risk",       f'<font color="{risk_color}"><b>{overall_risk}</b></font>'],
+    # Cover metadata table — use Paragraph cells for wrapping
+    rows = [
+        ["Target(s)",        _p(targets, styles["cell"])],
+        ["Report Date",      _p(now_utc.strftime("%A, %B %d, %Y"), styles["cell"])],
+        ["Report Time UTC",  _p(now_utc.strftime("%H:%M:%S UTC"), styles["cell"])],
+        ["Report Time VN",   _p(now_vn.strftime("%H:%M:%S UTC+7 (Vietnam)"), styles["cell"])],
+        ["Scan Started",     _p(start_str, styles["cell"])],
+        ["Scan Ended",       _p(end_str, styles["cell"])],
+        ["Scan Duration",    _p(duration_str, styles["cell"])],
+        ["Session ID",       _p(session.id[:16], styles["cell"])],
+        ["Scan Mode",        _p(getattr(session, "scan_mode", "N/A").upper(), styles["cell"])],
+        ["Total Findings",   _p(str(len(session.findings)), styles["cell"])],
+        ["Overall Risk",     Paragraph(f'<font color="{risk_c}"><b>{risk}</b></font>', styles["cell"])],
     ]
+    # Convert labels to Paragraph too
+    from reportlab.platypus import Paragraph as P
+    rows = [[P(f'<b>{r[0]}</b>', styles["cell"]), r[1]] for r in rows]
 
-    tbl = Table(cover_data, colWidths=[140, 260])
+    tbl = Table(rows, colWidths=[120, PAGE_W - 120])
     tbl.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (0, -1), _h(NAVY)),
         ("BACKGROUND", (1, 0), (1, -1), _h("#1e2d40")),
         ("TEXTCOLOR", (0, 0), (0, -1), _h(ACCENT_BLUE)),
         ("TEXTCOLOR", (1, 0), (1, -1), _h(WHITE)),
-        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-        ("FONTNAME", (1, 0), (1, -1), "Helvetica"),
-        ("FONTSIZE", (0, 0), (-1, -1), 10),
         ("GRID", (0, 0), (-1, -1), 0.5, _h("#2c3e50")),
-        ("ROWHEIGHT", (0, 0), (-1, -1), 24),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 12),
-        # Highlight datetime rows
-        ("BACKGROUND", (0, 1), (-1, 3), _h("#15202e")),
-        # Highlight risk row
-        ("BACKGROUND", (0, -1), (-1, -1), _h("#1a0a0a")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]))
     story.append(tbl)
-    story.append(Spacer(1, 30))
+    story.append(Spacer(1, 20))
 
-    # Severity summary on cover
+    # Severity breakdown on cover
     if any(sev.values()):
-        sev_cover = [["Severity", "Count", "Risk Level"]]
-        sev_rows = [
-            ("critical", "CVSS 9.0–10.0"),
-            ("high",     "CVSS 7.0–8.9"),
-            ("medium",   "CVSS 4.0–6.9"),
-            ("low",      "CVSS 1.0–3.9"),
-            ("info",     "Informational"),
+        sev_hdr = [
+            [P('<b>Severity</b>', styles["cell_white"]),
+             P('<b>Count</b>', styles["cell_white"]),
+             P('<b>CVSS Range</b>', styles["cell_white"])],
         ]
-        for s_key, cvss in sev_rows:
-            count = sev.get(s_key, 0)
-            if count > 0:
-                sev_cover.append([s_key.upper(), str(count), cvss])
-        if len(sev_cover) > 1:
-            sev_tbl = Table(sev_cover, colWidths=[100, 80, 220])
-            sev_style = [
+        sev_rows_data = [
+            ("critical", "9.0 - 10.0"), ("high", "7.0 - 8.9"),
+            ("medium", "4.0 - 6.9"), ("low", "1.0 - 3.9"), ("info", "Informational"),
+        ]
+        sev_body = []
+        for sk, cvss in sev_rows_data:
+            c = sev.get(sk, 0)
+            if c > 0:
+                sev_body.append([
+                    P(f'<font color="{SEV_COLORS[sk]}"><b>{sk.upper()}</b></font>', styles["cell"]),
+                    P(str(c), styles["cell"]),
+                    P(cvss, styles["cell"]),
+                ])
+        if sev_body:
+            stbl = Table(sev_hdr + sev_body, colWidths=[100, 60, PAGE_W - 160])
+            stbl.setStyle(TableStyle([
                 ("BACKGROUND", (0, 0), (-1, 0), _h(BLUE)),
-                ("TEXTCOLOR", (0, 0), (-1, 0), _h(WHITE)),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, -1), 9),
-                ("ALIGN", (1, 0), (1, -1), "CENTER"),
                 ("GRID", (0, 0), (-1, -1), 0.5, _h(GRAY)),
-                ("ROWHEIGHT", (0, 0), (-1, -1), 22),
-            ]
-            for row_idx, (s_key, _) in enumerate(sev_rows, 1):
-                if sev.get(s_key, 0) > 0:
-                    sev_style.append(("TEXTCOLOR", (0, row_idx), (0, row_idx), _h(SEV_COLORS.get(s_key, GRAY))))
-                    sev_style.append(("FONTNAME", (0, row_idx), (0, row_idx), "Helvetica-Bold"))
-            sev_tbl.setStyle(TableStyle(sev_style))
-            story.append(sev_tbl)
+                ("ALIGN", (1, 0), (1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ]))
+            story.append(stbl)
 
-    story.append(Spacer(1, 40))
+    story.append(Spacer(1, 25))
     story.append(HRFlowable(width="100%", thickness=1, color=_h(NAVY)))
     story.append(Paragraph(
         "<i>This report is confidential and intended solely for authorized recipients.</i>",
@@ -329,76 +274,74 @@ def _draw_cover(story, session, targets, styles, pagesize):
     story.append(PageBreak())
 
 
+# ─── Single Finding ──────────────────────────────────────────
+
 def _draw_finding(i: int, f: Any, styles, story):
-    """Add a detailed finding section."""
+    """Render one finding with full details. All text uses Paragraph for wrapping."""
     from reportlab.platypus import (
         Paragraph, Spacer, Table, TableStyle, HRFlowable, KeepTogether
     )
 
     sev = f.severity.value.lower() if hasattr(f.severity, "value") else str(f.severity).lower()
-    sev_color = _h(SEV_COLORS.get(sev, GRAY))
-    sev_bg    = _h(SEV_BG.get(sev, LIGHT_GRAY))
+    sev_color = SEV_COLORS.get(sev, GRAY)
+    sev_bg    = SEV_BG.get(sev, LIGHT_GRAY)
 
-    # ─ Finding header bar ─
-    header_tbl = Table(
-        [[f"FINDING #{i:02d}", f"  {f.title}", sev.upper()]],
-        colWidths=[70, 330, 80],
+    elements = []
+
+    # ── Header bar ──
+    hdr = Table(
+        [[Paragraph(f'<b>#{i:02d}</b>', styles["cell_white"]),
+          Paragraph(f'<b>{_safe(f.title)}</b>', styles["cell_white"]),
+          Paragraph(f'<b>{sev.upper()}</b>', styles["cell_white"])]],
+        colWidths=[35, PAGE_W - 100, 65],
     )
-    header_tbl.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), _h(NAVY)),
-        ("BACKGROUND", (2, 0), (2, 0), sev_color),
-        ("TEXTCOLOR", (0, 0), (1, 0), _h(WHITE)),
-        ("TEXTCOLOR", (2, 0), (2, 0), _h(WHITE)),
-        ("FONTNAME", (0, 0), (-1, -1), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("ALIGN", (0, 0), (0, 0), "LEFT"),
-        ("ALIGN", (1, 0), (1, 0), "LEFT"),
-        ("ALIGN", (2, 0), (2, 0), "CENTER"),
+    hdr.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (1, 0), _h(NAVY)),
+        ("BACKGROUND", (2, 0), (2, 0), _h(sev_color)),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("ROWHEIGHT", (0, 0), (-1, -1), 28),
-        ("LEFTPADDING", (0, 0), (-1, -1), 10),
-    ]))
-    story.append(header_tbl)
-
-    # ─ Metadata table ─
-    meta_rows = [
-        ["Severity",   sev.upper()],
-        ["Confidence", getattr(f, "confidence", "medium").upper()],
-        ["Category",   getattr(f, "category", "N/A") or "N/A"],
-        ["Affected",   str(getattr(f, "affected_url", "") or getattr(f, "affected_host", "") or "N/A")[:120]],
-    ]
-    if getattr(f, "cvss_score", None):
-        meta_rows.append(["CVSS Score", f"{f.cvss_score:.1f} / 10.0"])
-    if getattr(f, "cve_ids", None):
-        meta_rows.append(["CVE IDs", ", ".join(f.cve_ids[:5])])
-    if getattr(f, "tool_source", ""):
-        meta_rows.append(["Discovered by", f.tool_source])
-    if getattr(f, "references", None):
-        refs = [str(r) for r in f.references[:3]]
-        meta_rows.append(["References", "\n".join(refs)])
-
-    meta_tbl = Table(meta_rows, colWidths=[100, 380])
-    meta_style = [
-        ("BACKGROUND", (0, 0), (0, -1), sev_bg),
-        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("GRID", (0, 0), (-1, -1), 0.5, _h(LIGHT_GRAY)),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("ALIGN", (2, 0), (2, 0), "CENTER"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
         ("TOPPADDING", (0, 0), (-1, -1), 5),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ("LEFTPADDING", (0, 0), (-1, -1), 8),
-    ]
-    # Color severity value cell
-    meta_style.append(("TEXTCOLOR", (1, 0), (1, 0), sev_color))
-    meta_style.append(("FONTNAME", (1, 0), (1, 0), "Helvetica-Bold"))
-    meta_tbl.setStyle(TableStyle(meta_style))
-    story.append(meta_tbl)
-    story.append(Spacer(1, 6))
+    ]))
+    elements.append(hdr)
 
-    # ─ Description ─
+    # ── Metadata table ──
+    affected = str(getattr(f, "affected_url", "") or getattr(f, "affected_host", "") or "N/A")
+    meta = [
+        ["Severity",     Paragraph(f'<font color="{sev_color}"><b>{sev.upper()}</b></font>', styles["cell"])],
+        ["Confidence",   _p(str(getattr(f, "confidence", "medium")).upper(), styles["cell"])],
+        ["Category",     _p(str(getattr(f, "category", "") or "N/A"), styles["cell"])],
+        ["Affected",     _p(affected, styles["cell"])],
+    ]
+    if getattr(f, "cvss_score", None):
+        meta.append(["CVSS Score", _p(f"{f.cvss_score:.1f} / 10.0", styles["cell"])])
+    if getattr(f, "cve_ids", None):
+        meta.append(["CVE IDs", _p(", ".join(f.cve_ids[:10]), styles["cell"])])
+    if getattr(f, "tool_source", ""):
+        meta.append(["Tool", _p(f.tool_source, styles["cell"])])
+    if getattr(f, "references", None):
+        refs_text = "\n".join(str(r) for r in f.references[:5])
+        meta.append(["References", _p(refs_text, styles["cell"])])
+
+    # Convert labels to Paragraph
+    meta = [[Paragraph(f'<b>{r[0]}</b>', styles["cell_bold"]), r[1]] for r in meta]
+
+    mtbl = Table(meta, colWidths=[80, PAGE_W - 80])
+    mtbl.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), _h(sev_bg)),
+        ("GRID", (0, 0), (-1, -1), 0.5, _h(LIGHT_GRAY)),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(mtbl)
+    elements.append(Spacer(1, 4))
+
+    # ── Description ──
     desc = str(getattr(f, "description", "") or "")
     if desc:
-        # Split out embedded Impact section if present
         impact = ""
         if "**Impact:**" in desc:
             parts = desc.split("**Impact:**", 1)
@@ -409,56 +352,45 @@ def _draw_finding(i: int, f: Any, styles, story):
             desc = parts[0].strip()
             impact = parts[1].strip()
 
-        story.append(Paragraph("<b>📋 Description</b>", styles["subsection"]))
-        story.append(Paragraph(_safe(desc, 3000), styles["body"]))
+        elements.append(Paragraph("<b>Description</b>", styles["subsection"]))
+        elements.append(Paragraph(_safe(desc), styles["body"]))
 
         if impact:
-            story.append(Paragraph(
-                f"<b>⚠ Impact:</b> {_safe(impact, 1000)}",
-                styles["impact"],
-            ))
-            story.append(Spacer(1, 4))
+            elements.append(Paragraph(f"<b>Impact:</b> {_safe(impact)}", styles["impact"]))
+            elements.append(Spacer(1, 3))
 
-    # ─ Evidence ─
+    # ── Evidence ──
     evidence = str(getattr(f, "evidence", "") or "")
     if evidence:
-        story.append(Paragraph("<b>🔍 Evidence / Proof of Concept</b>", styles["subsection"]))
-        # Split by lines — show as code block
-        story.append(Paragraph(_safe(evidence, 2000), styles["code"]))
-        story.append(Spacer(1, 4))
+        elements.append(Paragraph("<b>Evidence / Proof of Concept</b>", styles["subsection"]))
+        elements.append(Paragraph(_safe(evidence), styles["code"]))
+        elements.append(Spacer(1, 3))
 
-    # ─ Remediation ─
+    # ── Remediation ──
     remediation = str(getattr(f, "remediation", "") or "")
     if remediation:
-        story.append(Paragraph("<b>🔧 Remediation</b>", styles["subsection"]))
-        # Split numbered steps if present
-        lines = remediation.split("\n")
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            story.append(Paragraph(
-                f"&nbsp;&nbsp;{_safe(line, 500)}",
-                styles["remediation"],
-            ))
-        story.append(Spacer(1, 4))
+        elements.append(Paragraph("<b>Remediation</b>", styles["subsection"]))
+        elements.append(Paragraph(_safe(remediation), styles["remediation"]))
+        elements.append(Spacer(1, 3))
 
-    story.append(HRFlowable(width="100%", thickness=0.5, color=_h(LIGHT_GRAY), spaceAfter=12))
+    elements.append(HRFlowable(width="100%", thickness=0.5, color=_h(LIGHT_GRAY), spaceAfter=8))
 
+    # Try to keep the finding header + metadata together
+    if len(elements) > 4:
+        story.append(KeepTogether(elements[:4]))  # header + meta table
+        story.extend(elements[4:])
+    else:
+        story.extend(elements)
+
+
+# ─── Main Entry Point ────────────────────────────────────────
 
 def generate_pdf_report(session: Any, output_dir: str = "./reports") -> str:
     """
     Generate a professional penetration testing PDF report.
-
-    Args:
-        session: ScanSession with findings and results
-        output_dir: Directory to save the PDF
-
-    Returns:
-        Path to the generated PDF file
+    All table cells use Paragraph for word-wrapping — no overflow.
     """
     try:
-        from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4
         from reportlab.lib.units import mm
         from reportlab.platypus import (
@@ -478,8 +410,8 @@ def generate_pdf_report(session: Any, output_dir: str = "./reports") -> str:
         pagesize=A4,
         rightMargin=20 * mm,
         leftMargin=20 * mm,
-        topMargin=22 * mm,
-        bottomMargin=18 * mm,
+        topMargin=20 * mm,
+        bottomMargin=15 * mm,
         title="Security Assessment Report",
         author="Security Agent",
         subject="Penetration Testing Report",
@@ -487,7 +419,6 @@ def generate_pdf_report(session: Any, output_dir: str = "./reports") -> str:
 
     styles = _build_styles()
     story  = []
-    W, H   = A4
 
     targets = ", ".join(t.value for t in session.targets) if hasattr(session, "targets") else "N/A"
 
@@ -500,172 +431,157 @@ def generate_pdf_report(session: Any, output_dir: str = "./reports") -> str:
     # 2. Table of Contents
     # ═══════════════════════════════════════════════════════
     story.append(Paragraph("Table of Contents", styles["section"]))
-    story.append(HRFlowable(width="100%", thickness=1, color=_h(ACCENT_BLUE), spaceAfter=10))
-    toc_items = [
+    story.append(HRFlowable(width="100%", thickness=1, color=_h(ACCENT_BLUE), spaceAfter=8))
+    toc = [
         ("1.", "Executive Summary"),
-        ("2.", "Findings Summary"),
-        ("3.", f"Detailed Findings ({len(session.findings)})"),
+        ("2.", f"Findings Summary (with Evidence) — {len(session.findings)} findings"),
+        ("3.", "Detailed Findings"),
         ("4.", "Remediation Roadmap"),
         ("5.", "Tool Execution Log"),
-        ("6.", "Appendix"),
+        ("6.", "Methodology"),
     ]
-    for num, title in toc_items:
-        story.append(Paragraph(
-            f'<b>{num}</b>&nbsp;&nbsp;{title}',
-            styles["toc_entry"],
-        ))
+    for num, title in toc:
+        story.append(Paragraph(f'<b>{num}</b>&nbsp;&nbsp;{title}', styles["toc_entry"]))
     story.append(PageBreak())
 
     # ═══════════════════════════════════════════════════════
     # 3. Executive Summary
     # ═══════════════════════════════════════════════════════
     story.append(Paragraph("1. Executive Summary", styles["section"]))
-    story.append(HRFlowable(width="100%", thickness=1, color=_h(ACCENT_BLUE), spaceAfter=10))
+    story.append(HRFlowable(width="100%", thickness=1, color=_h(ACCENT_BLUE), spaceAfter=8))
 
     sev = session.severity_summary
-    critical_n = sev.get("critical", 0)
-    high_n     = sev.get("high", 0)
-    medium_n   = sev.get("medium", 0)
-    low_n      = sev.get("low", 0)
-    info_n     = sev.get("info", 0)
-    total_n    = len(session.findings)
+    cn = sev.get("critical", 0)
+    hn = sev.get("high", 0)
+    mn = sev.get("medium", 0)
+    ln = sev.get("low", 0)
+    info_n = sev.get("info", 0)
+    total_n = len(session.findings)
 
-    # Risk rating
-    overall_risk = (
-        "CRITICAL" if critical_n > 0 else
-        "HIGH"     if high_n > 0 else
-        "MEDIUM"   if medium_n > 0 else
-        "LOW"      if low_n > 0 else
-        "INFORMATIONAL"
-    )
-    risk_color = SEV_COLORS.get(overall_risk.lower(), GRAY)
+    risk = "CRITICAL" if cn else "HIGH" if hn else "MEDIUM" if mn else "LOW" if ln else "INFO"
+    risk_c = SEV_COLORS.get(risk.lower(), GRAY)
 
     story.append(Paragraph(
         f"A comprehensive security assessment was conducted against <b>{_safe(targets)}</b>. "
-        f"The assessment identified <b>{total_n}</b> security findings across all severity levels. "
-        f"The overall risk rating is "
-        f'<font color="{risk_color}"><b>{overall_risk}</b></font>.',
+        f"The assessment identified <b>{total_n}</b> security findings. "
+        f'Overall risk: <font color="{risk_c}"><b>{risk}</b></font>.',
         styles["body"],
     ))
-    story.append(Spacer(1, 10))
+    story.append(Spacer(1, 8))
 
-    # Severity bar chart (text-based using table widths as bars)
-    max_count = max(critical_n, high_n, medium_n, low_n, info_n, 1)
-    BAR_MAX = 200  # max bar width in points
-
-    chart_data = [["Severity", "Count", "Distribution"]]
-    chart_rows = [
-        ("CRITICAL", critical_n, SEV_COLORS["critical"]),
-        ("HIGH",     high_n,     SEV_COLORS["high"]),
-        ("MEDIUM",   medium_n,   SEV_COLORS["medium"]),
-        ("LOW",      low_n,      SEV_COLORS["low"]),
-        ("INFO",     info_n,     SEV_COLORS["info"]),
-    ]
-
-    for label, count, color in chart_rows:
-        bar_w = int(BAR_MAX * count / max_count) if count else 0
-        chart_data.append([label, str(count), ""])
-
-    chart_tbl = Table(chart_data, colWidths=[80, 50, BAR_MAX + 20])
-    chart_style = [
+    # Severity distribution table
+    sev_hdr = [[
+        Paragraph('<b>Severity</b>', styles["cell_white"]),
+        Paragraph('<b>Count</b>', styles["cell_white"]),
+    ]]
+    sev_body = []
+    for sk, label in [("critical", "CRITICAL"), ("high", "HIGH"), ("medium", "MEDIUM"), ("low", "LOW"), ("info", "INFO")]:
+        c = sev.get(sk, 0)
+        sev_body.append([
+            Paragraph(f'<font color="{SEV_COLORS[sk]}"><b>{label}</b></font>', styles["cell"]),
+            Paragraph(str(c), styles["cell"]),
+        ])
+    sev_tbl = Table(sev_hdr + sev_body, colWidths=[120, 80])
+    sev_tbl.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), _h(DARK_NAVY)),
-        ("TEXTCOLOR", (0, 0), (-1, 0), _h(WHITE)),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
         ("GRID", (0, 0), (-1, -1), 0.5, _h(LIGHT_GRAY)),
-        ("ROWHEIGHT", (0, 0), (-1, -1), 22),
         ("ALIGN", (1, 0), (1, -1), "CENTER"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-    ]
-    for i, (_, _, color) in enumerate(chart_rows, 1):
-        chart_style.append(("TEXTCOLOR", (0, i), (0, i), _h(color)))
-        chart_style.append(("FONTNAME", (0, i), (0, i), "Helvetica-Bold"))
-
-    chart_tbl.setStyle(TableStyle(chart_style))
-    story.append(chart_tbl)
-    story.append(Spacer(1, 12))
+        ("TOPPADDING", (0, 0), (-1, -1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    story.append(sev_tbl)
+    story.append(Spacer(1, 8))
 
     # CVSS stats
     cvss_scores = [f.cvss_score for f in session.findings if getattr(f, "cvss_score", None)]
     if cvss_scores:
-        avg_cvss = sum(cvss_scores) / len(cvss_scores)
-        max_cvss = max(cvss_scores)
         story.append(Paragraph(
-            f"<b>CVSS Statistics:</b> Average score <b>{avg_cvss:.1f}</b>, "
-            f"Maximum score <b>{max_cvss:.1f}</b> / 10.0",
+            f"<b>CVSS:</b> Average <b>{sum(cvss_scores)/len(cvss_scores):.1f}</b>, "
+            f"Max <b>{max(cvss_scores):.1f}</b> / 10.0",
             styles["body"],
         ))
 
-    # Key findings highlight
-    critical_findings = [f for f in session.findings if getattr(f.severity, "value", "") == "critical"]
-    if critical_findings:
-        story.append(Spacer(1, 8))
+    # Critical findings callout
+    crits = [f for f in session.findings if getattr(f.severity, "value", "") == "critical"]
+    if crits:
+        story.append(Spacer(1, 6))
         story.append(Paragraph(
-            f'<font color="{SEV_COLORS["critical"]}"><b>⚠ Critical Findings Requiring Immediate Attention:</b></font>',
+            f'<font color="{SEV_COLORS["critical"]}"><b>Critical Findings Requiring Immediate Action:</b></font>',
             styles["body"],
         ))
-        for cf in critical_findings[:5]:
+        for cf in crits[:10]:
             story.append(Paragraph(
-                f"&nbsp;&nbsp;• <b>{_safe(cf.title)}</b> — {_safe(str(getattr(cf, 'affected_url', '') or getattr(cf, 'affected_host', ''))[:80])}",
-                styles["body_left"],
+                f"&nbsp;&nbsp;- <b>{_safe(cf.title)}</b> ({_safe(str(getattr(cf, 'affected_url', '') or getattr(cf, 'affected_host', '')))})",
+                styles["body_sm"],
             ))
 
     story.append(PageBreak())
 
     # ═══════════════════════════════════════════════════════
-    # 4. Findings Summary Table
+    # 4. Findings Summary Table (WITH evidence snippet)
     # ═══════════════════════════════════════════════════════
     story.append(Paragraph("2. Findings Summary", styles["section"]))
-    story.append(HRFlowable(width="100%", thickness=1, color=_h(ACCENT_BLUE), spaceAfter=10))
+    story.append(HRFlowable(width="100%", thickness=1, color=_h(ACCENT_BLUE), spaceAfter=8))
 
     if session.findings:
-        hdr = [["#", "Title", "Severity", "Category", "Affected"]]
-        rows = []
+        # Header row
+        hdr = [[
+            Paragraph('<b>#</b>', styles["cell_white"]),
+            Paragraph('<b>Title</b>', styles["cell_white"]),
+            Paragraph('<b>Sev</b>', styles["cell_white"]),
+            Paragraph('<b>Affected</b>', styles["cell_white"]),
+            Paragraph('<b>Evidence (snippet)</b>', styles["cell_white"]),
+        ]]
+
+        # Data rows — all cells are Paragraph for word-wrapping
+        data_rows = []
         for idx, f in enumerate(session.findings, 1):
             sev_val = getattr(f.severity, "value", str(f.severity)).lower()
-            rows.append([
-                str(idx),
-                str(f.title)[:60],
-                sev_val.upper(),
-                str(getattr(f, "category", "") or "—")[:20],
-                str(getattr(f, "affected_url", "") or getattr(f, "affected_host", "") or "—")[:45],
+            sc = SEV_COLORS.get(sev_val, GRAY)
+
+            evidence_raw = str(getattr(f, "evidence", "") or "")
+            # Take first 200 chars of evidence for the summary
+            evidence_snip = evidence_raw[:200] + ("..." if len(evidence_raw) > 200 else "")
+
+            data_rows.append([
+                Paragraph(str(idx), styles["cell"]),
+                _p(str(f.title), styles["cell"]),
+                Paragraph(f'<font color="{sc}"><b>{sev_val.upper()}</b></font>', styles["cell"]),
+                _p(str(getattr(f, "affected_url", "") or getattr(f, "affected_host", "") or "N/A"), styles["cell"]),
+                _p(evidence_snip or "N/A", styles["cell_code"]),
             ])
 
-        tbl = Table(hdr + rows, colWidths=[22, 170, 60, 80, 148])
-        tbl_style = [
+        # Column widths: # | Title | Sev | Affected | Evidence
+        col_w = [20, 120, 40, 110, PAGE_W - 290]
+        ftbl = Table(hdr + data_rows, colWidths=col_w, repeatRows=1)
+        ftbl_style = [
             ("BACKGROUND", (0, 0), (-1, 0), _h(DARK_NAVY)),
-            ("TEXTCOLOR", (0, 0), (-1, 0), _h(WHITE)),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 8),
-            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-            ("ALIGN", (0, 0), (0, -1), "CENTER"),
-            ("ALIGN", (2, 0), (2, -1), "CENTER"),
             ("GRID", (0, 0), (-1, -1), 0.5, _h(LIGHT_GRAY)),
-            ("ROWHEIGHT", (0, 0), (-1, -1), 20),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
         ]
-        for row_i, f in enumerate(session.findings, 1):
-            sev_val = getattr(f.severity, "value", str(f.severity)).lower()
-            color = SEV_COLORS.get(sev_val, GRAY)
-            bg = SEV_BG.get(sev_val, WHITE)
-            tbl_style.append(("BACKGROUND", (0, row_i), (-1, row_i),
-                               _h(bg) if row_i % 2 == 0 else _h(WHITE)))
-            tbl_style.append(("TEXTCOLOR", (2, row_i), (2, row_i), _h(color)))
-            tbl_style.append(("FONTNAME", (2, row_i), (2, row_i), "Helvetica-Bold"))
+        # Alternating row backgrounds
+        for ri in range(len(session.findings)):
+            row = ri + 1
+            bg = WHITE if row % 2 == 1 else LIGHT_GRAY
+            ftbl_style.append(("BACKGROUND", (0, row), (-1, row), _h(bg)))
 
-        tbl.setStyle(TableStyle(tbl_style))
-        story.append(tbl)
+        ftbl.setStyle(TableStyle(ftbl_style))
+        story.append(ftbl)
     else:
         story.append(Paragraph("No security findings were identified.", styles["body"]))
 
     story.append(PageBreak())
 
     # ═══════════════════════════════════════════════════════
-    # 5. Detailed Findings
+    # 5. Detailed Findings (full content)
     # ═══════════════════════════════════════════════════════
     story.append(Paragraph("3. Detailed Findings", styles["section"]))
-    story.append(HRFlowable(width="100%", thickness=1, color=_h(ACCENT_BLUE), spaceAfter=10))
+    story.append(HRFlowable(width="100%", thickness=1, color=_h(ACCENT_BLUE), spaceAfter=8))
 
     for i, f in enumerate(session.findings, 1):
         _draw_finding(i, f, styles, story)
@@ -676,42 +592,52 @@ def generate_pdf_report(session: Any, output_dir: str = "./reports") -> str:
     # 6. Remediation Roadmap
     # ═══════════════════════════════════════════════════════
     story.append(Paragraph("4. Remediation Roadmap", styles["section"]))
-    story.append(HRFlowable(width="100%", thickness=1, color=_h(ACCENT_BLUE), spaceAfter=10))
+    story.append(HRFlowable(width="100%", thickness=1, color=_h(ACCENT_BLUE), spaceAfter=8))
 
-    def _findings_by_sev(sevs):
+    def _by_sev(sevs):
         return [f for f in session.findings
                 if getattr(f.severity, "value", str(f.severity)).lower() in sevs]
 
-    roadmap_sections = [
-        ("🚨 Immediate Action (0–7 days)",  ["critical"],         RED,    "Address all critical vulnerabilities immediately. These represent severe risks that may be actively exploitable."),
-        ("⚡ Short-Term (1–4 weeks)",        ["high"],             ORANGE, "High severity findings should be remediated in the next sprint or iteration."),
-        ("📅 Mid-Term (1–3 months)",         ["medium"],           YELLOW, "Medium severity findings require attention in the near term to prevent escalation."),
-        ("📋 Long-Term (3–6 months)",        ["low", "info"],      BLUE,   "Low severity and informational findings should be tracked and addressed in regular hardening cycles."),
+    roadmap = [
+        ("Immediate Action (0-7 days)",  ["critical"],    RED,    "Address immediately. Severe risk, may be actively exploitable."),
+        ("Short-Term (1-4 weeks)",       ["high"],        ORANGE, "Remediate in the next sprint or iteration."),
+        ("Mid-Term (1-3 months)",        ["medium"],      YELLOW, "Address in near term to prevent escalation."),
+        ("Long-Term (3-6 months)",       ["low", "info"], BLUE,   "Track and address in regular hardening cycles."),
     ]
 
-    for title, sevs, color, guidance in roadmap_sections:
-        matching = _findings_by_sev(sevs)
+    for title, sevs, color, guidance in roadmap:
+        matching = _by_sev(sevs)
         if not matching:
             continue
-        story.append(Spacer(1, 8))
-        story.append(Paragraph(
-            f'<font color="{color}"><b>{title}</b></font>',
-            styles["subsection"],
-        ))
+        story.append(Paragraph(f'<font color="{color}"><b>{title}</b></font>', styles["subsection"]))
         story.append(Paragraph(guidance, styles["body"]))
-        for f in matching:
-            story.append(Paragraph(
-                f"&nbsp;&nbsp;• <b>{_safe(f.title)}</b>",
-                styles["body_left"],
-            ))
-            rem = str(getattr(f, "remediation", "") or "")
-            if rem:
-                # First sentence of remediation
-                first_line = rem.split("\n")[0].strip()[:200]
-                story.append(Paragraph(
-                    f"&nbsp;&nbsp;&nbsp;&nbsp;<i>{_safe(first_line)}</i>",
-                    styles["small"],
-                ))
+
+        # Table of findings in this priority
+        road_rows = [[
+            Paragraph('<b>#</b>', styles["cell_white"]),
+            Paragraph('<b>Finding</b>', styles["cell_white"]),
+            Paragraph('<b>Remediation</b>', styles["cell_white"]),
+        ]]
+        for idx, mf in enumerate(matching, 1):
+            rem = str(getattr(mf, "remediation", "") or "N/A")
+            # Show first 300 chars of remediation
+            rem_short = rem[:300] + ("..." if len(rem) > 300 else "")
+            road_rows.append([
+                Paragraph(str(idx), styles["cell"]),
+                _p(str(mf.title), styles["cell_bold"]),
+                _p(rem_short, styles["cell"]),
+            ])
+        rtbl = Table(road_rows, colWidths=[20, 160, PAGE_W - 180], repeatRows=1)
+        rtbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), _h(color)),
+            ("GRID", (0, 0), (-1, -1), 0.5, _h(LIGHT_GRAY)),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        story.append(rtbl)
+        story.append(Spacer(1, 8))
 
     story.append(PageBreak())
 
@@ -719,84 +645,80 @@ def generate_pdf_report(session: Any, output_dir: str = "./reports") -> str:
     # 7. Tool Execution Log
     # ═══════════════════════════════════════════════════════
     story.append(Paragraph("5. Tool Execution Log", styles["section"]))
-    story.append(HRFlowable(width="100%", thickness=1, color=_h(ACCENT_BLUE), spaceAfter=10))
+    story.append(HRFlowable(width="100%", thickness=1, color=_h(ACCENT_BLUE), spaceAfter=8))
 
     if getattr(session, "tool_executions", None):
-        log_hdr = [["Tool", "Phase", "Status", "Duration", "Findings"]]
+        log_hdr = [[
+            Paragraph('<b>Tool</b>', styles["cell_white"]),
+            Paragraph('<b>Phase</b>', styles["cell_white"]),
+            Paragraph('<b>Status</b>', styles["cell_white"]),
+            Paragraph('<b>Duration</b>', styles["cell_white"]),
+        ]]
         log_rows = []
-        for e in session.tool_executions[:60]:
-            findings_count = str(getattr(e, "findings_count", "—"))
+        for e in session.tool_executions[:80]:
+            status_str = getattr(e, "status", "").upper()
+            phase_str = e.phase.value if hasattr(e.phase, "value") else str(e.phase)
+            dur_str = f"{e.duration_seconds:.1f}s"
+            # Color-code status
+            if status_str in ("FAILED", "ERROR"):
+                status_p = Paragraph(f'<font color="{RED}"><b>{status_str}</b></font>', styles["cell"])
+            elif status_str == "COMPLETED":
+                status_p = Paragraph(f'<font color="{GREEN}"><b>{status_str}</b></font>', styles["cell"])
+            else:
+                status_p = _p(status_str, styles["cell"])
+
             log_rows.append([
-                e.tool_name,
-                e.phase.value if hasattr(e.phase, "value") else str(e.phase),
-                e.status.upper(),
-                f"{e.duration_seconds:.1f}s",
-                findings_count,
+                _p(e.tool_name, styles["cell"]),
+                _p(phase_str, styles["cell"]),
+                status_p,
+                _p(dur_str, styles["cell"]),
             ])
-        log_tbl = Table(log_hdr + log_rows, colWidths=[100, 80, 70, 70, 60])
-        log_style = [
+
+        ltbl = Table(log_hdr + log_rows, colWidths=[120, 100, 90, 70], repeatRows=1)
+        ltbl.setStyle(TableStyle([
             ("BACKGROUND", (0, 0), (-1, 0), _h(DARK_NAVY)),
-            ("TEXTCOLOR", (0, 0), (-1, 0), _h(WHITE)),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 8),
             ("GRID", (0, 0), (-1, -1), 0.5, _h(LIGHT_GRAY)),
-            ("ROWHEIGHT", (0, 0), (-1, -1), 18),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [_h(WHITE), _h(LIGHT_GRAY)]),
-        ]
-        for row_i, e in enumerate(session.tool_executions[:60], 1):
-            st = getattr(e, "status", "").lower()
-            if st in ("failed", "error"):
-                log_style.append(("TEXTCOLOR", (2, row_i), (2, row_i), _h(RED)))
-            elif st == "completed":
-                log_style.append(("TEXTCOLOR", (2, row_i), (2, row_i), _h(GREEN)))
-        log_tbl.setStyle(TableStyle(log_style))
-        story.append(log_tbl)
+        ]))
+        story.append(ltbl)
     else:
         story.append(Paragraph("No tool execution data available.", styles["body"]))
 
     story.append(PageBreak())
 
     # ═══════════════════════════════════════════════════════
-    # 8. Appendix / Methodology
+    # 8. Methodology
     # ═══════════════════════════════════════════════════════
-    story.append(Paragraph("6. Appendix — Methodology", styles["section"]))
-    story.append(HRFlowable(width="100%", thickness=1, color=_h(ACCENT_BLUE), spaceAfter=10))
+    story.append(Paragraph("6. Methodology", styles["section"]))
+    story.append(HRFlowable(width="100%", thickness=1, color=_h(ACCENT_BLUE), spaceAfter=8))
     story.append(Paragraph(
-        "The security assessment followed a structured penetration testing methodology "
-        "aligned with industry standards (OWASP, PTES, NIST SP 800-115). "
-        "The engagement was conducted in the following phases:",
+        "The assessment followed a structured methodology aligned with OWASP, PTES, and NIST SP 800-115:",
         styles["body"],
     ))
-    phases = [
-        ("Reconnaissance", "Passive and active information gathering: subdomain enumeration, DNS, port scanning, technology fingerprinting, WAF detection."),
-        ("Vulnerability Scanning", "Automated vulnerability detection using nuclei (CVE templates), Nikto, TestSSL, secret scanning, email security checks, and WAF bypass testing."),
-        ("Exploitation", "Controlled exploitation of identified vulnerabilities to determine impact and confirm findings."),
-        ("Reporting", "AI-powered analysis, severity classification, risk assessment, and remediation guidance generation."),
-    ]
-    for phase_name, desc in phases:
-        story.append(Paragraph(f"<b>{phase_name}:</b> {_safe(desc)}", styles["body"]))
+    for phase, desc in [
+        ("Reconnaissance", "Subdomain enumeration, DNS resolution, port scanning, technology fingerprinting, WAF detection."),
+        ("Vulnerability Scanning", "Nuclei CVE templates, Nikto, TestSSL, email security checks (SPF/DKIM/DMARC), secret scanning."),
+        ("Exploitation", "Controlled exploitation to confirm findings and assess actual impact."),
+        ("Reporting", "AI-powered analysis, severity classification, risk assessment, remediation guidance."),
+    ]:
+        story.append(Paragraph(f"<b>{phase}:</b> {_safe(desc)}", styles["body"]))
 
-    story.append(Spacer(1, 20))
+    story.append(Spacer(1, 15))
     story.append(HRFlowable(width="100%", thickness=1, color=_h(LIGHT_GRAY)))
-    story.append(Spacer(1, 8))
     story.append(Paragraph(
-        f"<i>Report generated by Security Agent v1.0.0 on "
-        f"{datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}. "
-        f"This document is confidential.</i>",
+        f"<i>Security Agent v1.0.0 | {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')} | Confidential</i>",
         styles["footer"],
     ))
 
     # ═══════════════════════════════════════════════════════
-    # Build PDF
+    # Build
     # ═══════════════════════════════════════════════════════
-    doc.build(
-        story,
-        onFirstPage=_page_header_footer,
-        onLaterPages=_page_header_footer,
-    )
-    logger.info(f"✅ PDF report saved: {filepath}")
+    doc.build(story, onFirstPage=_page_header_footer, onLaterPages=_page_header_footer)
+    logger.info(f"PDF report saved: {filepath}")
     return str(filepath)
 
 
@@ -811,13 +733,11 @@ def _fallback_text_pdf(session: Any, output_dir: str) -> str:
         "  SECURITY ASSESSMENT REPORT",
         "=" * 70,
         f"  Date    : {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}",
-        f"  Session : {session.id[:12]}",
+        f"  Session : {session.id[:16]}",
         f"  Targets : {', '.join(t.value for t in session.targets)}",
         f"  Findings: {len(session.findings)}",
-        "=" * 70,
-        "",
+        "=" * 70, "",
     ]
-
     for i, f in enumerate(session.findings, 1):
         sev = getattr(f.severity, "value", str(f.severity)).upper()
         lines += [
@@ -828,15 +748,15 @@ def _fallback_text_pdf(session: Any, output_dir: str) -> str:
             f"  Category  : {getattr(f, 'category', 'N/A')}",
             "",
             "  DESCRIPTION:",
-            f"  {getattr(f, 'description', '')[:500]}",
+            f"  {getattr(f, 'description', '')}",
             "",
             "  EVIDENCE:",
-            f"  {getattr(f, 'evidence', '')[:300]}",
+            f"  {getattr(f, 'evidence', '')}",
             "",
             "  REMEDIATION:",
-            f"  {getattr(f, 'remediation', '')[:500]}",
+            f"  {getattr(f, 'remediation', '')}",
         ]
 
     filepath.write_text("\n".join(lines), encoding="utf-8")
-    logger.warning(f"reportlab unavailable, saved text report: {filepath}")
+    logger.warning(f"reportlab unavailable — text report: {filepath}")
     return str(filepath)

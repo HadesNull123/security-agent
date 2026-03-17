@@ -45,6 +45,7 @@ from src.agent.prompts import (
     ANALYSIS_PROMPT,
     ENRICHMENT_PROMPT,
     EXPLOITATION_PROMPT,
+    POST_EXPLOIT_VERIFICATION_PROMPT,
     RECON_PROMPT,
     REPORTING_PROMPT,
     SCANNING_PROMPT,
@@ -649,7 +650,11 @@ class SecurityAgent:
             else:
                 logger.info("Skipping exploitation — no findings to exploit")
 
-            # Phase 5: Report
+            # Phase 5: Post-Exploitation AI Verification
+            if self.session.findings:
+                await self._run_post_exploit_verification(targets)
+
+            # Phase 6: Report
             if self.ui:
                 self.ui.set_phase("reporting")
             await self._generate_report(targets)
@@ -1086,6 +1091,91 @@ class SecurityAgent:
         )
 
         logger.info(f"Analysis completed. Total findings: {len(self.session.findings)}")
+
+    async def _run_post_exploit_verification(self, targets: list[str]) -> None:
+        """
+        Post-exploitation AI verification: re-check ALL findings
+        after exploitation tools have run. AI validates true/false positives,
+        corrects severity, consolidates duplicates, and adds exploitation status.
+        """
+        logger.info("═══ Phase: POST-EXPLOITATION VERIFICATION ═══")
+
+        if self.ui:
+            self.ui.set_phase("verification")
+
+        self.token_tracker.check_budget()
+
+        target_str = ", ".join(t.value for t in self.session.targets)
+        num_before = len(self.session.findings)
+
+        # Gather all findings detail
+        all_findings = self._get_findings_detail()
+
+        # Gather exploitation results
+        exploit_results_list = []
+        for er in self.session.exploit_results:
+            exploit_results_list.append(
+                f"- Tool: {er.tool_name} | Target: {getattr(er, 'target', 'N/A')} | "
+                f"Success: {er.success} | Output: {str(getattr(er, 'output', ''))[:500]}"
+            )
+        # Also include exploitation-phase tool executions
+        for te in self.session.tool_executions:
+            phase = te.phase.value if hasattr(te.phase, "value") else str(te.phase)
+            if phase == "exploitation":
+                exploit_results_list.append(
+                    f"- Tool: {te.tool_name} | Status: {te.status} | "
+                    f"Duration: {te.duration_seconds:.1f}s"
+                )
+        exploit_results = "\n".join(exploit_results_list) if exploit_results_list else "No exploitation was performed."
+
+        prompt = POST_EXPLOIT_VERIFICATION_PROMPT.format(
+            target=target_str,
+            all_findings=all_findings,
+            exploit_results=exploit_results,
+        )
+        self.token_tracker.track(prompt)
+
+        # Build tools — AI needs add_finding to update findings
+        from langchain.tools import StructuredTool
+        add_finding_tool = StructuredTool.from_function(
+            coroutine=self._add_finding,
+            name="add_finding",
+            description="Add or update a security finding with corrected information",
+            args_schema=AddFindingInput,
+        )
+
+        # Use agent executor so AI can call add_finding multiple times
+        from langchain.agents import AgentExecutor, create_tool_calling_agent
+        from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+
+        agent_prompt = ChatPromptTemplate.from_messages([
+            ("system", SYSTEM_PROMPT),
+            ("human", "{input}"),
+            MessagesPlaceholder(variable_name="agent_scratchpad"),
+        ])
+
+        agent = create_tool_calling_agent(self.llm, [add_finding_tool], agent_prompt)
+        executor = AgentExecutor(
+            agent=agent,
+            tools=[add_finding_tool],
+            verbose=False,
+            max_iterations=min(len(self.session.findings) * 2 + 5, 30),
+            handle_parsing_errors=True,
+        )
+
+        try:
+            result = await executor.ainvoke({"input": prompt})
+            verification_text = result.get("output", "")
+            self.token_tracker.track(verification_text)
+            self.context["verification"] = verification_text
+
+            logger.info(
+                f"Post-exploit verification complete: "
+                f"{num_before} findings before → {len(self.session.findings)} after"
+            )
+        except Exception as e:
+            logger.warning(f"Post-exploitation verification failed (non-fatal): {e}")
+            # Non-fatal — we still have the original findings
 
     def _load_tool_output_files(self) -> str:
         """Load all saved tool output JSON files and return a summary for AI analysis."""
