@@ -24,6 +24,8 @@ class FindingsParser:
 
     def __init__(self):
         self._seen_hashes: set[str] = set()  # deduplication
+        self._duplicate_count: int = 0
+        self._duplicates: list[str] = []  # track duplicate titles for reporting
 
     def _dedup_key(self, finding: Finding) -> str:
         """Generate a deduplication key for a finding."""
@@ -33,9 +35,24 @@ class FindingsParser:
         """Check if a finding is a duplicate of one already seen."""
         key = self._dedup_key(finding)
         if key in self._seen_hashes:
+            self._duplicate_count += 1
+            self._duplicates.append(f"[{finding.tool_source}] {finding.title}")
+            logger.info(
+                f"🔁 Duplicate finding detected: [{finding.severity.value.upper()}] "
+                f"{finding.title} (from {finding.tool_source})"
+            )
             return True
         self._seen_hashes.add(key)
         return False
+
+    def get_duplicates_summary(self) -> str:
+        """Return a summary of all duplicate findings detected."""
+        if not self._duplicates:
+            return "No duplicate findings detected."
+        lines = [f"🔁 {self._duplicate_count} duplicate finding(s) detected:"]
+        for d in self._duplicates:
+            lines.append(f"  - {d}")
+        return "\n".join(lines)
 
     # ─── Nuclei ──────────────────────────────────────────────
 
@@ -446,11 +463,19 @@ class FindingsParser:
 
         try:
             raw_findings = parser(data)
-            # Deduplicate
+            # Deduplicate and report
             unique_findings = []
+            skipped = 0
             for f in raw_findings:
                 if not self.is_duplicate(f):
                     unique_findings.append(f)
+                else:
+                    skipped += 1
+            if skipped:
+                logger.warning(
+                    f"🔁 {tool_name}: {skipped} duplicate finding(s) skipped "
+                    f"(already found by other tools)"
+                )
             return unique_findings
         except Exception as e:
             logger.warning(f"Failed to parse findings from {tool_name}: {e}")

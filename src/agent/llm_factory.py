@@ -37,6 +37,11 @@ def create_llm(config: Config) -> BaseChatModel:
     if provider == LLMProvider.GEMINI:
         if not config.llm.google_api_key:
             raise ValueError("GOOGLE_API_KEY is required for Gemini provider")
+        # Suppress FutureWarning from deprecated google.generativeai package
+        # langchain_google_genai internally uses it; warning breaks terminal UI
+        import warnings
+        warnings.filterwarnings("ignore", category=FutureWarning, module="langchain_google_genai")
+        warnings.filterwarnings("ignore", category=FutureWarning, module="google.generativeai")
         from langchain_google_genai import ChatGoogleGenerativeAI
         return ChatGoogleGenerativeAI(
             model=model,
