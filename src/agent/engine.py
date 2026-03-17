@@ -618,7 +618,7 @@ class SecurityAgent:
         except ValueError:
             tt = TargetType.DOMAIN
         target_objs = [Target(value=t, target_type=tt) for t in targets]
-        self.session = ScanSession(targets=target_objs)
+        self.session = ScanSession(targets=target_objs, scan_mode=mode)
         await self.db.create_session(self.session)
 
         # Start live UI

@@ -160,6 +160,7 @@ class ScanSession(BaseModel):
     tool_executions: list[ToolExecution] = Field(default_factory=list)
     status: str = "initialized"  # initialized, running, completed, failed
     current_phase: ScanPhase = ScanPhase.RECON
+    scan_mode: str = "normal"  # quick, normal, deep
     started_at: datetime = Field(default_factory=datetime.utcnow)
     completed_at: datetime | None = None
 

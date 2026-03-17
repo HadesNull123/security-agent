@@ -217,7 +217,30 @@ def _draw_cover(story, session, targets, styles, pagesize):
     story.append(Spacer(1, 8))
     story.append(HRFlowable(width="60%", thickness=2, color=_h(ACCENT_BLUE), spaceAfter=20))
 
-    # Cover info table
+    # Cover info table — build comprehensive datetime info
+    from datetime import timezone, timedelta
+    tz_vn = timezone(timedelta(hours=7))  # Vietnam UTC+7
+    now_utc = datetime.utcnow()
+    now_vn  = datetime.now(tz_vn)
+
+    # Try to get scan start/end times from session
+    scan_start = getattr(session, "started_at", None)
+    scan_end   = getattr(session, "completed_at", None)
+
+    if isinstance(scan_start, datetime):
+        start_str = scan_start.strftime("%Y-%m-%d %H:%M:%S UTC")
+    else:
+        start_str = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    if isinstance(scan_end, datetime) and isinstance(scan_start, datetime):
+        duration = scan_end - scan_start
+        total_sec = int(duration.total_seconds())
+        duration_str = f"{total_sec // 3600}h {(total_sec % 3600) // 60}m {total_sec % 60}s"
+        end_str = scan_end.strftime("%Y-%m-%d %H:%M:%S UTC")
+    else:
+        end_str = now_utc.strftime("%Y-%m-%d %H:%M:%S UTC")
+        duration_str = "N/A"
+
     sev = session.severity_summary
     critical_n = sev.get("critical", 0)
     high_n     = sev.get("high", 0)
@@ -231,15 +254,20 @@ def _draw_cover(story, session, targets, styles, pagesize):
     risk_color = SEV_COLORS.get(overall_risk.lower(), GRAY)
 
     cover_data = [
-        ["Target(s)",     targets],
-        ["Assessment Date", datetime.utcnow().strftime("%B %d, %Y")],
-        ["Session ID",    session.id[:12]],
-        ["Scan Mode",     getattr(session, "scan_mode", "N/A").upper()],
-        ["Total Findings", str(len(session.findings))],
-        ["Overall Risk",  f'<font color="{risk_color}"><b>{overall_risk}</b></font>'],
+        ["Target(s)",          targets],
+        ["Report Date (UTC)",  now_utc.strftime("%A, %B %d, %Y")],
+        ["Report Time (UTC)",  now_utc.strftime("%H:%M:%S UTC")],
+        ["Report Time (VN)",   now_vn.strftime("%H:%M:%S UTC+7 (Vietnam)")],
+        ["Scan Started",       start_str],
+        ["Scan Ended",         end_str],
+        ["Scan Duration",      duration_str],
+        ["Session ID",         session.id[:16] if len(session.id) >= 16 else session.id],
+        ["Scan Mode",          getattr(session, "scan_mode", "N/A").upper()],
+        ["Total Findings",     str(len(session.findings))],
+        ["Overall Risk",       f'<font color="{risk_color}"><b>{overall_risk}</b></font>'],
     ]
 
-    tbl = Table(cover_data, colWidths=[120, 280])
+    tbl = Table(cover_data, colWidths=[140, 260])
     tbl.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (0, -1), _h(NAVY)),
         ("BACKGROUND", (1, 0), (1, -1), _h("#1e2d40")),
@@ -249,9 +277,13 @@ def _draw_cover(story, session, targets, styles, pagesize):
         ("FONTNAME", (1, 0), (1, -1), "Helvetica"),
         ("FONTSIZE", (0, 0), (-1, -1), 10),
         ("GRID", (0, 0), (-1, -1), 0.5, _h("#2c3e50")),
-        ("ROWHEIGHT", (0, 0), (-1, -1), 26),
+        ("ROWHEIGHT", (0, 0), (-1, -1), 24),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING", (0, 0), (-1, -1), 12),
+        # Highlight datetime rows
+        ("BACKGROUND", (0, 1), (-1, 3), _h("#15202e")),
+        # Highlight risk row
+        ("BACKGROUND", (0, -1), (-1, -1), _h("#1a0a0a")),
     ]))
     story.append(tbl)
     story.append(Spacer(1, 30))
@@ -574,7 +606,7 @@ def generate_pdf_report(session: Any, output_dir: str = "./reports") -> str:
         ))
         for cf in critical_findings[:5]:
             story.append(Paragraph(
-                f"&nbsp;&nbsp;• <b>{_safe(cf.title)}</b> — {_safe(str(getattr(cf, 'affected_url', '') or getattr(cf, 'affected_host', ''))[:80]}",
+                f"&nbsp;&nbsp;• <b>{_safe(cf.title)}</b> — {_safe(str(getattr(cf, 'affected_url', '') or getattr(cf, 'affected_host', ''))[:80])}",
                 styles["body_left"],
             ))
 
