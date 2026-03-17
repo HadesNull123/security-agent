@@ -41,6 +41,9 @@ class GitHubToolInfo:
     binary_name: str = ""             # binary name inside archive (default = name)
     asset_pattern: str = ""           # regex pattern for release asset filename
     post_install: list[str] = field(default_factory=list)  # commands to run after install
+    # Some repos (e.g. gobuster) use Title-Case: "Linux", "Windows", "Darwin" / "x86_64" "arm64"
+    os_format: str = "lower"          # "lower" (linux) or "title" (Linux)
+    arch_format: str = "pd"           # "pd" (amd64) or "native" (x86_64)
 
 
 def _detect_platform() -> tuple[str, str]:
@@ -67,9 +70,25 @@ def _detect_platform() -> tuple[str, str]:
     return os_name, arch
 
 
+def _build_asset_patterns(tool_info: "GitHubToolInfo", os_name: str, arch: str) -> list[str]:
+    """Build multiple regex patterns to match correct release asset, accounting for naming variations."""
+    # Map arch to native names
+    arch_native = {"amd64": "x86_64", "arm64": "arm64", "armv7": "armv7l"}.get(arch, arch)
+
+    # OS and arch variants to try
+    os_variants = [os_name, os_name.capitalize()]  # ["linux", "Linux"]
+    arch_variants = list(dict.fromkeys([arch, arch_native]))  # ["amd64", "x86_64"]  deduplicated
+
+    patterns = []
+    for o in os_variants:
+        for a in arch_variants:
+            patterns.append(rf"(?i){re.escape(tool_info.name)}_[\d.]+_{o}_{a}\.(zip|tar\.gz|tgz)")
+            patterns.append(rf"(?i){re.escape(tool_info.name)}_{o}_{a}\.(zip|tar\.gz|tgz)")
+    return patterns
+
+
 def _build_asset_pattern(tool_name: str, os_name: str, arch: str) -> str:
-    """Build a regex pattern to match the correct release asset."""
-    # Most ProjectDiscovery tools use: toolname_version_os_arch.zip
+    """Legacy single-pattern builder (kept for compatibility)."""
     return rf"(?i){re.escape(tool_name)}_[\d.]+_{os_name}_{arch}\.(zip|tar\.gz)"
 
 
@@ -101,17 +120,24 @@ GITHUB_TOOLS: dict[str, GitHubToolInfo] = {
         name="dnsx",
         repo="projectdiscovery/dnsx",
     ),
+    # ffuf uses ProjectDiscovery-style naming
     "ffuf": GitHubToolInfo(
         name="ffuf",
         repo="ffuf/ffuf",
     ),
+    # gobuster uses Title-Case: gobuster_Linux_x86_64.tar.gz
     "gobuster": GitHubToolInfo(
         name="gobuster",
         repo="OJ/gobuster",
+        os_format="title",    # Linux not linux
+        arch_format="native", # x86_64 not amd64
     ),
+    # amass uses similar Title-Case conventions
     "amass": GitHubToolInfo(
         name="amass",
         repo="owasp-amass/amass",
+        os_format="title",
+        arch_format="native",
     ),
 }
 
@@ -161,25 +187,27 @@ class ToolUpdater:
             logger.warning(f"Failed to check GitHub releases for {repo}: {e}")
         return None
 
-    def _find_asset(self, release: dict, tool_name: str) -> dict | None:
-        """Find the correct asset for current OS/arch."""
-        pattern = _build_asset_pattern(tool_name, self.os_name, self.arch)
+    def _find_asset(self, release: dict, tool_info: GitHubToolInfo) -> dict | None:
+        """Find the correct asset for current OS/arch using multiple naming patterns."""
         assets = release.get("assets", [])
+        tool_name = tool_info.name
 
-        for asset in assets:
-            name = asset.get("name", "")
-            if re.match(pattern, name):
-                return asset
+        # Try all pattern combinations (handles Linux/linux, amd64/x86_64, etc.)
+        patterns = _build_asset_patterns(tool_info, self.os_name, self.arch)
+        for pattern in patterns:
+            for asset in assets:
+                if re.match(pattern, asset.get("name", "")):
+                    return asset
 
-        # Fallback: try less strict matching
+        # Final fallback: keyword-based match (case-insensitive)
+        arch_native = {"amd64": "x86_64", "arm64": "arm64"}.get(self.arch, self.arch)
+        skip_exts = (".txt", ".sig", ".sha256", ".pem", ".sbom")
         for asset in assets:
             name = asset.get("name", "").lower()
             if (tool_name in name
-                and self.os_name in name
-                and self.arch in name
-                and not name.endswith(".txt")
-                and not name.endswith(".sig")
-                and not name.endswith(".sha256")):
+                    and self.os_name in name
+                    and any(a in name for a in [self.arch, arch_native])
+                    and not any(name.endswith(ext) for ext in skip_exts)):
                 return asset
 
         return None
@@ -288,7 +316,7 @@ class ToolUpdater:
                 return True, f"{tool_name} is already at latest version ({latest_version})"
 
         # Find correct asset for this platform
-        asset = self._find_asset(release, tool_name)
+        asset = self._find_asset(release, tool_info)
         if not asset:
             return False, (
                 f"No prebuilt binary found for {tool_name} "
@@ -307,15 +335,29 @@ class ToolUpdater:
             return False, f"Failed to install {tool_name} v{latest_version}"
 
     async def update_all(self, tool_names: list[str] | None = None) -> dict[str, tuple[bool, str]]:
-        """Check and update all GitHub-based tools."""
+        """Check and update all GitHub-based tools in parallel."""
         names = tool_names or list(GITHUB_TOOLS.keys())
-        results = {}
+        names = [n for n in names if n in GITHUB_TOOLS]
+        results: dict[str, tuple[bool, str]] = {}
 
-        for name in names:
-            if name in GITHUB_TOOLS:
+        # Limit concurrent downloads to avoid rate-limiting
+        sem = asyncio.Semaphore(4)
+
+        async def _update_one(name: str) -> tuple[str, bool, str]:
+            async with sem:
                 success, msg = await self.check_and_update(name)
-                results[name] = (success, msg)
-                logger.info(f"  {'✅' if success else '❌'} {name}: {msg}")
+                return name, success, msg
+
+        tasks = [_update_one(name) for name in names]
+        completed = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for item in completed:
+            if isinstance(item, Exception):
+                logger.warning(f"Update task failed: {item}")
+                continue
+            name, success, msg = item
+            results[name] = (success, msg)
+            logger.info(f"  {'✅' if success else '❌'} {name}: {msg}")
 
         return results
 

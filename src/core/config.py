@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings
@@ -104,9 +104,17 @@ class ShodanConfig(BaseSettings):
 class MetasploitConfig(BaseSettings):
     """Metasploit RPC configuration."""
     rpc_host: str = "127.0.0.1"
-    rpc_port: int = 55553
+    rpc_port: Optional[int] = 55553
     rpc_password: str = ""
     rpc_ssl: bool = True
+
+    @field_validator("rpc_port", mode="before")
+    @classmethod
+    def _coerce_rpc_port(cls, v: Any) -> Optional[int]:
+        """Convert empty string to None, preventing ValidationError for unconfigured port."""
+        if v == "" or v is None:
+            return 55553  # default port
+        return v
 
     model_config = {"env_prefix": "METASPLOIT_", "env_file": ".env", "extra": "ignore"}
 

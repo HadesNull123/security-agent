@@ -36,11 +36,13 @@ class NucleiTool(BaseTool):
             cmd.extend(["-id", template_ids])
             has_filter = True
 
-        # ★ Smart defaults: if no specific filter, use auto-scan + severity filter
-        # Without this, nuclei runs ALL 9000+ templates which takes 30+ minutes
+        # ★ Smart defaults: if no specific filter, run broad scan with severity filter
+        # NOTE: -as (auto-scan) uses Wappalyzer tech detection which often picks 0 templates
+        # and exits in 2 seconds. Instead use explicit severity + common tags.
         if not has_filter:
-            cmd.extend(["-as"])  # automatic scan (wappalyzer-based template selection)
             cmd.extend(["-severity", "critical,high,medium"])
+            # Run common vulnerability categories (thousands of templates, not all 9k)
+            cmd.extend(["-tags", "cve,sqli,xss,rce,lfi,ssrf,xxe,idor,cors,redirect,misconfig,exposure,takeover,default-login"])
 
         # Rate control
         if rate_limit := kwargs.get("rate_limit"):
@@ -59,10 +61,8 @@ class NucleiTool(BaseTool):
 
         # Performance: timeout per request + max host errors
         cmd.extend(["-timeout", "15", "-mhe", "10"])
-
-        # Automatic scan (use all templates) — explicit override
-        if kwargs.get("automatic", False) and "-as" not in cmd:
-            cmd.extend(["-as"])
+        # Show scan progress stats in stderr
+        cmd.extend(["-stats"])
 
         returncode, stdout, stderr = await run_command(cmd)
 
