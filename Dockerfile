@@ -38,7 +38,9 @@ RUN go install -v github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest 
     && go install -v github.com/projectdiscovery/dnsx/cmd/dnsx@latest \
     && go install -v github.com/ffuf/ffuf/v2@latest \
     && go install -v github.com/OJ/gobuster/v3@latest \
-    && go install -v github.com/owasp-amass/amass/v4/...@master
+    && go install -v github.com/owasp-amass/amass/v4/...@master \
+    && go install -v github.com/hahwul/dalfox/v2@latest \
+    && go install -v github.com/dwisiswant0/crlfuzz/cmd/crlfuzz@latest
 
 # ---------------------------------------------------------------------------
 # Final image
@@ -55,13 +57,15 @@ COPY --from=go-builder /go/bin/dnsx /usr/local/bin/
 COPY --from=go-builder /go/bin/ffuf /usr/local/bin/
 COPY --from=go-builder /go/bin/gobuster /usr/local/bin/
 COPY --from=go-builder /go/bin/amass /usr/local/bin/
+COPY --from=go-builder /go/bin/dalfox /usr/local/bin/
+COPY --from=go-builder /go/bin/crlfuzz /usr/local/bin/
 
 # Install testssl.sh
 RUN git clone --depth 1 https://github.com/drwetter/testssl.sh.git /opt/testssl \
     && ln -s /opt/testssl/testssl.sh /usr/local/bin/testssl.sh
 
 # Install Python-based security tools
-RUN pip install --no-cache-dir theharvester wafw00f commix
+RUN pip install --no-cache-dir theharvester wafw00f commix corscanner PyPDF2
 
 # Install SearchSploit
 RUN git clone https://gitlab.com/exploit-database/exploitdb.git /opt/exploitdb \
