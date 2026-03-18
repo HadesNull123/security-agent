@@ -99,6 +99,8 @@ def cli(ctx: click.Context, env_file: str, verbose: bool) -> None:
 @click.option("--json-output", is_flag=True, help="Also generate JSON report")
 @click.option("--pdf", is_flag=True, default=True, help="Generate PDF report (default: enabled)")
 @click.option("--no-pdf", is_flag=True, help="Disable PDF report generation")
+@click.option("--spec", "-s", type=click.Path(exists=True), default=None,
+              help="Project spec file (PDF/JSON/MD/YAML) — AI extracts APIs/params for targeted scanning")
 @click.pass_context
 def scan(
     ctx: click.Context,
@@ -111,6 +113,7 @@ def scan(
     json_output: bool,
     pdf: bool,
     no_pdf: bool,
+    spec: str | None,
 ) -> None:
     """🔍 Run a penetration test. Modes: quick (link scan), normal, deep."""
     print_banner()
@@ -149,6 +152,37 @@ def scan(
         border_style="red",
     ))
 
+    # Show spec file info if provided
+    if spec:
+        from src.agent.spec_parser import get_supported_formats
+
+        # ★ MANDATORY: spec analysis requires LLM — check API key
+        llm_key_map = {
+            "gemini": config.llm.google_api_key,
+            "openai": config.llm.openai_api_key,
+            "anthropic": config.llm.anthropic_api_key,
+            "ollama": True,  # Ollama is local, no key needed
+        }
+        provider = config.llm.provider.value
+        has_key = bool(llm_key_map.get(provider))
+        if not has_key:
+            console.print(Panel(
+                f"[bold red]❌ ERROR: --spec requires a configured LLM provider.[/bold red]\n\n"
+                f"Current provider: [cyan]{provider}[/cyan] — but no API key found.\n\n"
+                f"Set the API key in your [bold].env[/bold] file:\n"
+                f"  • Gemini: [cyan]GOOGLE_API_KEY=your-key[/cyan]\n"
+                f"  • OpenAI: [cyan]OPENAI_API_KEY=your-key[/cyan]\n"
+                f"  • Anthropic: [cyan]ANTHROPIC_API_KEY=your-key[/cyan]\n\n"
+                f"The --spec option uses AI to extract APIs, params, and attack surface\n"
+                f"from your project documentation. This REQUIRES a working LLM connection.",
+                title="🛑 LLM Required for Spec Analysis",
+                border_style="red",
+            ))
+            raise SystemExit(1)
+
+        console.print(f"\n📄 Project spec: [bold cyan]{spec}[/bold cyan]")
+        console.print("   → AI will extract APIs, params, and attack surface from this file")
+
     # ★ Ask user for scan intensity (affects max_iterations)
     console.print("\n[bold cyan]🔄 Select Scan Intensity:[/bold cyan]")
     console.print("  [1] ⚡ Light (fast, ~10 tool calls per phase)")
@@ -178,7 +212,10 @@ def scan(
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
-            session = loop.run_until_complete(agent.scan(list(targets), target_type, mode=mode, scan_intensity=scan_intensity))
+            session = loop.run_until_complete(agent.scan(
+                list(targets), target_type, mode=mode,
+                scan_intensity=scan_intensity, spec_file=spec,
+            ))
         finally:
             # Properly shut down to avoid "Event loop is closed" errors from subprocess __del__
             try:

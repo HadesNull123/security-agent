@@ -36,12 +36,12 @@ The AI autonomously selects appropriate tools, analyzes results, generates custo
 - **Vector Memory** (TF-IDF + cosine similarity) — maintains context across phases without external APIs
 - Automatic finding deduplication, severity classification, and risk assessment
 
-### 🔍 21 Integrated Security Tools
+### 🔍 27 Integrated Security Tools
 
 | Phase | Tools | Purpose |
 |-------|-------|---------|
-| **Recon** | Subfinder, Naabu, Katana, httpx, theHarvester, Amass, WhatWeb, Wafw00f, Dnsx | Subdomain enumeration, port scanning, web crawling, technology fingerprinting, WAF detection, DNS resolution, OSINT |
-| **Scanning** | Nuclei, ffuf, Gobuster, Nikto, TestSSL, ZAP (API), Acunetix (API) | Vulnerability scanning, fuzzing, directory brute-forcing, SSL/TLS auditing, web application scanning |
+| **Recon** | Subfinder, Naabu, Katana, httpx, Amass, WhatWeb, Wafw00f, Dnsx | Subdomain enumeration, port scanning, web crawling, technology fingerprinting, WAF detection, DNS resolution |
+| **Scanning** | Nuclei, ffuf, Gobuster, Nikto, TestSSL, **Dalfox**, **CRLFuzz**, **CORScanner**, SecretScanner, EmailSecurity, ZAP (API), Acunetix (API) | Vulnerability scanning, fuzzing, directory brute-forcing, SSL/TLS auditing, **XSS scanning**, **CRLF injection**, **CORS misconfiguration**, credential leak detection, email security (SPF/DKIM/DMARC) |
 | **Exploitation** | SQLMap, Commix, SearchSploit, Metasploit (RPC), Custom Exploit Engine | SQL injection, command injection, known CVE exploits, AI-generated Python exploits |
 
 ### ⚡ Smart Tool Defaults
@@ -55,6 +55,9 @@ All tools are pre-configured with optimized defaults for fast scanning. No more 
 | **Gobuster** | 40 threads, 10s timeout, auto-download wordlist | ~1-3 min |
 | **Nikto** | Max 5 min scan time, 10s/request timeout | max 5 min |
 | **TestSSL** | `--fast` mode, 10s connect timeout | ~2-3 min |
+| **Dalfox** | XSS scanner, DOM mining, 10 workers, JSON output | ~2-5 min |
+| **CRLFuzz** | CRLF injection, silent mode, 25 concurrent | ~1-2 min |
+| **CORScanner** | CORS misconfig, 10+ check types, 50 threads | ~1-2 min |
 | **Katana** | Max 500 URLs, 100 req/s, depth 3 | ~1-2 min |
 | **Naabu** | Top-100 ports, rate 1000 pkt/s | ~30s-1 min |
 | **SQLMap** | Level 2, risk 2, 4 threads | ~3-5 min |
@@ -154,6 +157,11 @@ secagent scan <target> --mode normal
 
 # Deep scan — comprehensive with all tools and large wordlists (~30-90 min)
 secagent scan <target> --mode deep
+
+# Scan with project specification file (PDF/JSON/MD/YAML)
+# AI extracts APIs, parameters, auth methods → targeted scanning
+secagent scan <target> --spec /path/to/api_docs.json
+secagent scan <target> --spec swagger.yaml --mode deep
 ```
 
 ### Scan Options
@@ -179,6 +187,37 @@ secagent scan target.com -o ./my-reports
 # Verbose logging
 secagent scan target.com -v
 ```
+
+### 📄 Spec File Input (AI-Powered)
+
+Provide project documentation and the AI will extract APIs, parameters, and attack surface for targeted scanning:
+
+```bash
+# OpenAPI/Swagger spec → AI extracts endpoints
+secagent scan https://api.example.com --spec swagger.yaml
+
+# PDF project documentation
+secagent scan https://api.example.com --spec project_docs.pdf
+
+# JSON API documentation
+secagent scan https://api.example.com --spec api_spec.json
+
+# Markdown technical docs
+secagent scan https://api.example.com --spec ARCHITECTURE.md
+```
+
+**Supported formats:** PDF, JSON, YAML, Markdown, TXT
+
+**What the AI extracts:**
+- API endpoints (method, path, parameters, auth)
+- Authentication mechanisms (JWT, OAuth, API keys)
+- Technologies and frameworks used
+- Sensitive data flows (payment, PII, admin)
+- Attack surface (file uploads, admin panels, debug endpoints)
+- Test accounts (if documented)
+- Additional target domains/subdomains
+
+> **Note:** `--spec` requires a configured LLM provider. The agent will show a clear error if no API key is set.
 
 ### Tool Management
 
@@ -293,16 +332,18 @@ All settings are managed via the `.env` file. Copy `.env.example` to `.env` and 
 ## 🔄 Scan Pipeline
 
 ```
-┌─────────────┐    ┌───────────┐    ┌──────────┐    ┌──────────────┐    ┌───────────┐
-│    RECON     │ →  │  SCANNING │ →  │ ANALYSIS │ →  │ EXPLOITATION │ →  │ REPORTING │
-│             │    │           │    │          │    │              │    │           │
-│ • Subdomains│    │ • Nuclei  │    │ • AI     │    │ • SQLMap     │    │ • MD      │
-│ • Ports     │    │ • ffuf    │    │   dedup  │    │ • Commix     │    │ • PDF     │
-│ • Crawling  │    │ • Gobuster│    │ • CVSS   │    │ • Custom     │    │ • JSON    │
-│ • Tech ID   │    │ • Nikto   │    │   rating │    │   exploits   │    │           │
-│ • DNS       │    │ • TestSSL │    │ • Risk   │    │ • Metasploit │    │           │
-│ • WAF       │    │           │    │   assess │    │   (CVE only) │    │           │
-└─────────────┘    └───────────┘    └──────────┘    └──────────────┘    └───────────┘
+┌─────────────┐    ┌─────────────┐    ┌───────────┐    ┌──────────┐    ┌──────────────┐    ┌───────────┐
+│  PHASE 0    │    │    RECON    │    │  SCANNING │    │ ANALYSIS │    │ EXPLOITATION │    │ REPORTING │
+│  (optional) │ →  │            │ →  │           │ →  │          │ →  │              │ →  │           │
+│             │    │ • Subdomains│   │ • Nuclei  │    │ • AI     │    │ • SQLMap     │    │ • MD      │
+│ • Spec File │    │ • Ports    │    │ • ffuf    │    │   dedup  │    │ • Commix     │    │ • PDF     │
+│   Analysis  │    │ • Crawling │    │ • Gobuster│    │ • CVSS   │    │ • Custom     │    │ • JSON    │
+│ • API       │    │ • Tech ID  │    │ • Nikto   │    │   rating │    │   exploits   │    │           │
+│   Extraction│    │ • DNS      │    │ • Dalfox  │    │ • Risk   │    │ • Metasploit │    │           │
+│ • LLM Parse │    │ • WAF      │    │ • CRLFuzz │    │   assess │    │   (CVE only) │    │           │
+│             │    │            │    │ • CORScan │    │          │    │              │    │           │
+│             │    │            │    │ • TestSSL │    │          │    │              │    │           │
+└─────────────┘    └─────────────┘    └───────────┘    └──────────┘    └──────────────┘    └───────────┘
 ```
 
 ### Scan Modes
@@ -704,6 +745,8 @@ security_agent/
 │   ├── agent/                      # AI orchestration
 │   │   ├── engine.py               # Core AI agent orchestrator (LangChain)
 │   │   ├── prompts.py              # Phase-specific AI prompts
+│   │   ├── schemas.py              # Pydantic input schemas for all tools
+│   │   ├── spec_parser.py          # Spec file parser (PDF/JSON/MD/YAML)
 │   │   ├── llm_factory.py          # LLM provider factory
 │   │   ├── memory.py               # Vector memory (TF-IDF, cosine similarity)
 │   │   └── skills.py               # Skill and workflow loader
@@ -732,12 +775,17 @@ security_agent/
 │   │   │   ├── theharvester.py     # OSINT gathering
 │   │   │   ├── whatweb.py          # Technology fingerprinting
 │   │   │   └── wafw00f.py          # WAF detection
-│   │   ├── scanner/                # Scanning (7 tools)
+│   │   ├── scanner/                # Scanning (12 tools)
 │   │   │   ├── nuclei.py           # Template-based vuln scanner
 │   │   │   ├── ffuf.py             # Web fuzzer
 │   │   │   ├── gobuster.py         # Directory brute-forcing
 │   │   │   ├── nikto.py            # Web server scanner
 │   │   │   ├── testssl.py          # SSL/TLS auditing
+│   │   │   ├── dalfox.py           # XSS scanner (reflected/stored/DOM)
+│   │   │   ├── crlfuzz.py          # CRLF injection scanner
+│   │   │   ├── corscanner.py       # CORS misconfiguration scanner
+│   │   │   ├── secret_scanner.py   # Credential leak scanner (builtin)
+│   │   │   ├── email_security.py   # SPF/DKIM/DMARC checker (builtin)
 │   │   │   ├── zap.py              # OWASP ZAP (API)
 │   │   │   └── acunetix.py         # Acunetix (API)
 │   │   └── exploit/                # Exploitation (5 tools)

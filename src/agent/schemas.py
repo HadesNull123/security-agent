@@ -115,6 +115,24 @@ class AcunetixInput(GeminiSafeModel):
     target: str = Field(description="URL to scan with Acunetix")
     profile: str = Field(default="full", description="Scan profile: full, high_risk, xss, sqli")
 
+class DalfoxInput(GeminiSafeModel):
+    target: str = Field(description="URL to scan for XSS, ideally with query params (e.g. http://example.com/search?q=test)")
+    param: str = Field(default="", description="Specific parameter to test (e.g. 'q')")
+    blind_url: str = Field(default="", description="Blind XSS callback URL for out-of-band detection")
+    headers: str = Field(default="", description="Custom headers separated by ';' (e.g. 'Authorization: Bearer xxx')")
+    cookie: str = Field(default="", description="Cookie string for authenticated scanning")
+
+class CRLFuzzInput(GeminiSafeModel):
+    target: str = Field(description="URL to test for CRLF injection")
+    method: str = Field(default="GET", description="HTTP method: GET, POST, PUT, DELETE")
+    headers: str = Field(default="", description="Custom headers separated by ';'")
+    concurrency: int = Field(default=25, description="Number of concurrent tests")
+
+class CORScannerInput(GeminiSafeModel):
+    target: str = Field(description="Domain or URL to check for CORS misconfigurations")
+    headers: str = Field(default="", description="Custom headers (e.g. 'Cookie: session=abc')")
+    threads: int = Field(default=50, description="Number of threads")
+
 
 # ─── Exploit Tools ──────────────────────────────────────────
 

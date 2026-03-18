@@ -277,3 +277,52 @@ Instead, provide concrete steps such as:
 Use markdown format. Be thorough but concise.
 """
 
+SPEC_ANALYSIS_PROMPT = """You are a senior security analyst. Analyze the following project documentation and extract ALL security-relevant information for penetration testing.
+
+## Project Documentation:
+{spec_content}
+
+## Target: {target}
+
+---
+
+Extract the following and return as valid JSON (no markdown, no code fences, just raw JSON):
+
+{{
+  "endpoints": [
+    {{
+      "method": "POST",
+      "path": "/api/v1/login",
+      "params": ["email", "password"],
+      "auth": "none",
+      "description": "User login"
+    }}
+  ],
+  "auth_mechanisms": ["JWT Bearer token", "API Key in header"],
+  "technologies": ["Node.js", "Express", "PostgreSQL", "Redis"],
+  "sensitive_flows": [
+    "Payment processing via /api/payment",
+    "File upload at /api/upload accepts arbitrary files"
+  ],
+  "attack_surface": [
+    "Admin panel at /admin with basic auth",
+    "GraphQL endpoint at /graphql with introspection enabled",
+    "File upload without extension validation"
+  ],
+  "test_accounts": [
+    {{"username": "test@example.com", "password": "Test123!", "role": "user"}}
+  ],
+  "api_base_url": "https://api.example.com/v1",
+  "additional_targets": ["admin.example.com", "staging.example.com"]
+}}
+
+RULES:
+1. Extract EVERY endpoint mentioned, even partially described ones
+2. Include ALL parameters (query, body, header, path params)
+3. Note which endpoints require authentication and which don't
+4. Identify sensitive operations: payments, file uploads, admin functions, data export
+5. Look for test/default credentials mentioned in docs
+6. Identify additional domains/subdomains mentioned
+7. If the doc is an OpenAPI/Swagger spec, extract ALL paths with their methods and params
+8. If information is not available, use empty arrays [] — do NOT omit fields
+"""

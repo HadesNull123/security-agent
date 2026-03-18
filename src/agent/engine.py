@@ -49,8 +49,10 @@ from src.agent.prompts import (
     RECON_PROMPT,
     REPORTING_PROMPT,
     SCANNING_PROMPT,
+    SPEC_ANALYSIS_PROMPT,
     SYSTEM_PROMPT,
 )
+from src.agent.spec_parser import parse_spec_file, SpecParseError
 from src.security.safety import SafetyGuard
 from src.agent.skills import get_skills_prompt, get_scan_mode_guidance
 from src.tools import ToolResult
@@ -66,6 +68,9 @@ from src.tools.recon import (
 )
 from src.tools.scanner import (
     AcunetixTool,
+    CORScannerTool,
+    CRLFuzzTool,
+    DalfoxTool,
     EmailSecurityTool,
     FfufTool,
     GobusterTool,
@@ -181,6 +186,7 @@ from src.agent.schemas import (
     AmassInput, WhatWebInput, Wafw00fInput, DnsxInput,
     NucleiInput, FfufInput, GobusterInput, NiktoInput,
     TestSSLInput, ZAPInput, SecretScannerInput, AcunetixInput,
+    DalfoxInput, CRLFuzzInput, CORScannerInput,
     SQLMapInput, CommixInput, SearchSploitInput, MetasploitInput,
     CustomExploitInput, AddFindingInput, EmailSecurityInput,
 )
@@ -245,6 +251,9 @@ class SecurityAgent:
             "testssl": TestSSLTool(),
             "secret_scanner": SecretScannerTool(),
             "email_security": EmailSecurityTool(),
+            "dalfox": DalfoxTool(),
+            "crlfuzz": CRLFuzzTool(),
+            "corscanner": CORScannerTool(),
         }
         if self.config.zap.api_key:
             self.scanner_tools["zap"] = ZAPTool(self.config.zap)
@@ -491,6 +500,9 @@ class SecurityAgent:
                 "nikto": NiktoInput, "testssl": TestSSLInput,
                 "secret_scanner": SecretScannerInput,
                 "email_security": EmailSecurityInput,
+                "dalfox": DalfoxInput,
+                "crlfuzz": CRLFuzzInput,
+                "corscanner": CORScannerInput,
             }
             tool_map = {n: (available[n], schema_map[n]) for n in available if n in schema_map}
 
@@ -609,9 +621,11 @@ class SecurityAgent:
         target_type: str = "domain",
         mode: str = "normal",
         scan_intensity: int = 20,
+        spec_file: str | None = None,
     ) -> ScanSession:
         self.scan_mode = mode
         self.scan_intensity = scan_intensity
+        self.spec_file = spec_file
         await self.initialize()
 
         try:
@@ -632,6 +646,10 @@ class SecurityAgent:
         )
 
         try:
+            # Phase 0: Spec Analysis (if spec file provided)
+            if self.spec_file:
+                await self._analyze_spec_file(self.spec_file, targets)
+
             # Phase 1: Recon
             await self._run_phase(ScanPhase.RECON, targets)
 
@@ -870,6 +888,106 @@ class SecurityAgent:
             logger.error(f"Phase {phase.value} failed after retries: {e}")
             self.context[phase.value] = f"Phase failed: {str(e)}"
 
+    async def _analyze_spec_file(self, spec_path: str, targets: list[str]) -> None:
+        """Analyze project spec file with LLM to extract APIs, params, and attack surface."""
+        logger.info(f"📄 Analyzing project specification: {spec_path}")
+        if self.ui:
+            self.ui.log("📄 [bold cyan]Analyzing project specification...[/bold cyan]")
+
+        try:
+            # 1. Parse file content
+            spec_content = parse_spec_file(spec_path)
+            logger.info(f"📄 Spec file parsed: {len(spec_content):,} chars")
+
+            # 2. Store raw spec in memory for later phases
+            self.memory.add(
+                content=spec_content[:5000],
+                metadata={"type": "spec_file", "source": spec_path},
+                category="spec",
+                session_id=self.session.id,
+            )
+
+            # 3. Send to LLM for analysis
+            target_str = ", ".join(targets)
+            prompt = SPEC_ANALYSIS_PROMPT.format(
+                spec_content=spec_content[:30000],  # Limit for LLM context
+                target=target_str,
+            )
+            self.token_tracker.track(prompt)
+
+            llm = self._get_or_create_llm()
+            response = await llm.ainvoke([
+                SystemMessage(content=SYSTEM_PROMPT),
+                HumanMessage(content=prompt),
+            ])
+            response_text = response.content if hasattr(response, "content") else str(response)
+            self.token_tracker.track(response_text)
+
+            # 4. Parse JSON response
+            import re
+            # Strip markdown code fences if present
+            clean = re.sub(r'^```(?:json)?\s*', '', response_text.strip(), flags=re.MULTILINE)
+            clean = re.sub(r'```\s*$', '', clean.strip(), flags=re.MULTILINE)
+
+            spec_data = json.loads(clean)
+
+            # 5. Store analysis results in context
+            self.context["spec_analysis"] = spec_data
+
+            # 6. Extract key data for logging
+            endpoints = spec_data.get("endpoints", [])
+            auth = spec_data.get("auth_mechanisms", [])
+            techs = spec_data.get("technologies", [])
+            attack_surface = spec_data.get("attack_surface", [])
+            additional_targets = spec_data.get("additional_targets", [])
+
+            logger.info(
+                f"✅ Spec analysis complete: "
+                f"{len(endpoints)} endpoints, "
+                f"{len(auth)} auth mechanisms, "
+                f"{len(techs)} technologies, "
+                f"{len(attack_surface)} attack surface items"
+            )
+
+            if self.ui:
+                self.ui.log(
+                    f"✅ Spec: [bold]{len(endpoints)}[/bold] endpoints, "
+                    f"[bold]{len(techs)}[/bold] technologies, "
+                    f"[bold]{len(attack_surface)}[/bold] attack vectors"
+                )
+
+            # 7. Store in memory for later phases
+            self.memory.add(
+                content=json.dumps(spec_data, indent=2, default=str)[:5000],
+                metadata={"type": "spec_analysis", "endpoints_count": len(endpoints)},
+                category="spec_analysis",
+                session_id=self.session.id,
+            )
+
+            # 8. Add additional targets if found
+            if additional_targets:
+                logger.info(f"📄 Additional targets from spec: {additional_targets}")
+                # Store for use in prompts (don't add to targets list automatically)
+                self.context["additional_targets"] = additional_targets
+
+        except SpecParseError as e:
+            logger.warning(f"⚠️ Spec file parse error: {e}")
+            if self.ui:
+                self.ui.log(f"⚠️ [yellow]Spec parse error: {e}[/yellow]")
+        except json.JSONDecodeError as e:
+            logger.warning(f"⚠️ LLM returned invalid JSON for spec analysis: {e}")
+            # Store raw text as fallback
+            self.context["spec_analysis_raw"] = response_text[:3000]
+            if self.ui:
+                self.ui.log("⚠️ [yellow]Spec analysis partial — raw text stored[/yellow]")
+        except TokenBudgetExhausted:
+            logger.warning("⚠️ Token budget exhausted during spec analysis")
+            raise
+        except Exception as e:
+            logger.warning(f"⚠️ Spec analysis failed: {e}")
+            if self.ui:
+                self.ui.log(f"⚠️ [yellow]Spec analysis failed: {e}[/yellow]")
+
     def _extract_recon_context(self) -> None:
         """Extract structured data from saved tool output JSON files to populate context for SCANNING prompt."""
         import os
@@ -941,6 +1059,102 @@ class SecurityAgent:
             f"Recon context extracted: technologies={self.context['technologies'][:100]}, "
             f"ports={self.context['ports'][:100]}, urls={urls_count}"
         )
+
+    def _build_spec_context(self, phase: ScanPhase) -> str:
+        """Build spec analysis context section for a given phase prompt."""
+        spec = self.context.get("spec_analysis")
+        if not spec:
+            # Check for raw text fallback
+            raw = self.context.get("spec_analysis_raw")
+            if raw:
+                return f"\n\n## 📄 Project Specification (raw)\n{raw[:2000]}\n"
+            return ""
+
+        lines = ["\n\n## 📄 Project Specification Analysis"]
+
+        if phase == ScanPhase.RECON:
+            # RECON: high-level overview for targeted crawling
+            endpoints = spec.get("endpoints", [])
+            if endpoints:
+                lines.append(f"\n### Known API Endpoints ({len(endpoints)} from project docs)")
+                for ep in endpoints[:30]:
+                    method = ep.get("method", "?")
+                    path = ep.get("path", "?")
+                    auth = ep.get("auth", "?")
+                    lines.append(f"  - {method} {path} (auth: {auth})")
+                if len(endpoints) > 30:
+                    lines.append(f"  ... and {len(endpoints) - 30} more")
+
+            additional = spec.get("additional_targets", [])
+            if additional:
+                lines.append(f"\n### Additional Targets from Docs")
+                for t in additional:
+                    lines.append(f"  - {t}")
+
+            techs = spec.get("technologies", [])
+            if techs:
+                lines.append(f"\n### Technologies: {', '.join(techs)}")
+
+            lines.append("\n⚠️ Use these endpoints to guide your crawling — run katana and httpx against these paths.")
+
+        elif phase == ScanPhase.SCANNING:
+            # SCANNING: full detail — endpoints with params for targeted scanning
+            endpoints = spec.get("endpoints", [])
+            if endpoints:
+                lines.append(f"\n### API Endpoints to Scan ({len(endpoints)})")
+                for ep in endpoints[:50]:
+                    method = ep.get("method", "?")
+                    path = ep.get("path", "?")
+                    params = ep.get("params", [])
+                    auth = ep.get("auth", "?")
+                    desc = ep.get("description", "")
+                    param_str = f" params=[{', '.join(params)}]" if params else ""
+                    lines.append(f"  - **{method} {path}**{param_str} (auth: {auth}) {desc}")
+
+            auth_mechs = spec.get("auth_mechanisms", [])
+            if auth_mechs:
+                lines.append(f"\n### Auth Mechanisms: {', '.join(auth_mechs)}")
+
+            test_accounts = spec.get("test_accounts", [])
+            if test_accounts:
+                lines.append("\n### Test Accounts (for authenticated scanning)")
+                for acc in test_accounts:
+                    lines.append(f"  - {acc.get('username', '?')} / {acc.get('password', '?')} ({acc.get('role', '?')})")
+
+            sensitive = spec.get("sensitive_flows", [])
+            if sensitive:
+                lines.append("\n### Sensitive Flows (prioritize scanning)")
+                for s in sensitive:
+                    lines.append(f"  - 🚨 {s}")
+
+            api_base = spec.get("api_base_url", "")
+            if api_base:
+                lines.append(f"\n### API Base URL: {api_base}")
+
+            lines.append("\n⚠️ IMPORTANT: Target these specific endpoints with nuclei, ffuf, and other scanning tools.")
+            lines.append("Use the parameters listed above to craft targeted payloads.")
+
+        elif phase == ScanPhase.EXPLOITATION:
+            # EXPLOITATION: attack surface + sensitive flows
+            attack_surface = spec.get("attack_surface", [])
+            if attack_surface:
+                lines.append("\n### Attack Surface from Project Docs")
+                for a in attack_surface:
+                    lines.append(f"  - ⚔️ {a}")
+
+            sensitive = spec.get("sensitive_flows", [])
+            if sensitive:
+                lines.append("\n### Sensitive Flows to Target")
+                for s in sensitive:
+                    lines.append(f"  - 🚨 {s}")
+
+            test_accounts = spec.get("test_accounts", [])
+            if test_accounts:
+                lines.append("\n### Available Test Accounts")
+                for acc in test_accounts:
+                    lines.append(f"  - {acc.get('username', '?')} / {acc.get('password', '?')} ({acc.get('role', '?')})")
+
+        return "\n".join(lines) + "\n"
 
     def _build_phase_prompt(self, phase: ScanPhase, targets: list[str]) -> str:
         target_str = ", ".join(targets)
@@ -1036,9 +1250,14 @@ class SecurityAgent:
         else:
             base_prompt = f"Continue the security assessment for {target_str}"
 
+        # ★ Inject spec analysis data into prompts (if available)
+        spec_section = self._build_spec_context(phase)
+
         full_prompt = f"{mode_text}\n{budget_info}{findings_info}\n{tool_inventory}\n{skills_text}\n"
         if memory_context:
             full_prompt += f"\n## Relevant Past Context\n{memory_context}\n"
+        if spec_section:
+            full_prompt += spec_section
         full_prompt += f"\n{base_prompt}"
 
 

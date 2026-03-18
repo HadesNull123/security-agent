@@ -160,6 +160,37 @@ TOOL_REGISTRY: dict[str, ToolInfo] = {
         install_command="",
         description="Built-in email security checker (SPF, DKIM, DMARC — pure Python, no install needed)",
     ),
+    "dalfox": ToolInfo(
+        name="dalfox",
+        binary_name="dalfox",
+        install_method="manual",
+        install_command=(
+            "mkdir -p ~/.local/bin && "
+            "curl -sL $(curl -s https://api.github.com/repos/hahwul/dalfox/releases/latest "
+            "| grep 'browser_download_url.*linux_amd64.tar.gz' | head -1 | cut -d'\"' -f4) "
+            "| tar xz -C /tmp && mv /tmp/dalfox ~/.local/bin/ && chmod +x ~/.local/bin/dalfox"
+        ),
+        description="XSS vulnerability scanner (reflected, stored, DOM-based XSS)",
+    ),
+    "crlfuzz": ToolInfo(
+        name="crlfuzz",
+        binary_name="crlfuzz",
+        install_method="manual",
+        install_command=(
+            "mkdir -p ~/.local/bin && "
+            "curl -sL $(curl -s https://api.github.com/repos/dwisiswant0/crlfuzz/releases/latest "
+            "| grep 'browser_download_url.*linux_amd64.tar.gz' | head -1 | cut -d'\"' -f4) "
+            "| tar xz -C /tmp && mv /tmp/crlfuzz ~/.local/bin/ && chmod +x ~/.local/bin/crlfuzz"
+        ),
+        description="CRLF injection scanner (HTTP response splitting)",
+    ),
+    "corscanner": ToolInfo(
+        name="corscanner",
+        binary_name="cors",
+        install_method="pip",
+        install_command="pip install --break-system-packages corscanner",
+        description="CORS misconfiguration scanner",
+    ),
 }
 
 
