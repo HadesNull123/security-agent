@@ -42,7 +42,7 @@ def setup_logging(verbose: bool = False) -> None:
 def print_banner() -> None:
     banner = """
 ╔═══════════════════════════════════════════════════════╗
-║          🛡️  SECURITY AGENT v1.0.0  🛡️               ║
+║          🛡️  SECURITY AGENT v1.1.0  🛡️               ║
 ║       AI-Powered Automated Penetration Testing        ║
 ╚═══════════════════════════════════════════════════════╝
 """

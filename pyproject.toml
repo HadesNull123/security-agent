@@ -1,6 +1,6 @@
 [project]
 name = "security-agent-ai"
-version = "1.0.0"
+version = "1.1.0"
 description = "AI-powered Security Agent for automated penetration testing"
 readme = "README.md"
 requires-python = ">=3.11"

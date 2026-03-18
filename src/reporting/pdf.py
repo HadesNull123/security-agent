@@ -857,7 +857,7 @@ def generate_pdf_report(session: Any, output_dir: str = "./reports") -> str:
     story.append(Spacer(1, 15))
     story.append(HRFlowable(width="100%", thickness=1, color=_h(LIGHT_GRAY)))
     story.append(Paragraph(
-        f"<i>Security Agent v1.0.0 | {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')} | Confidential</i>",
+        f"<i>Security Agent v1.1.0 | {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')} | Confidential</i>",
         styles["footer"],
     ))
 
