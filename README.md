@@ -120,10 +120,7 @@ brew install python go git
 ### Installation
 
 ```bash
-# Option A: Install from PyPI
-pip install security-agent-ai
-
-# Option B: Install from source
+# Clone and install from source
 cd security_agent
 pip install -e .
 
@@ -266,7 +263,7 @@ secagent run-tool example.com --tool testssl
 secagent run-tool example.com --tool dnsx
 ```
 
-> **Tip**: If running from source without pip install, use `python main.py` instead of `secagent`.
+> **Tip**: You can also use `python main.py` instead of `secagent`.
 
 ---
 
