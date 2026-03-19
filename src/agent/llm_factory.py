@@ -1,6 +1,6 @@
 """
 LLM Factory - Creates LangChain LLM instances based on configuration.
-Supports Gemini, OpenAI, Anthropic, and Ollama.
+Supports Gemini, OpenAI, Anthropic, Ollama, and LM Studio.
 """
 
 from __future__ import annotations
@@ -80,5 +80,23 @@ def create_llm(config: Config) -> BaseChatModel:
             temperature=temperature,
         )
 
+    elif provider == LLMProvider.LMSTUDIO:
+        # LM Studio exposes an OpenAI-compatible API at http://localhost:1234/v1
+        # Use ChatOpenAI with custom base_url and a dummy API key
+        lm_model = config.llm.lmstudio_model or model
+        base_url = config.llm.lmstudio_base_url
+
+        logger.info(f"Connecting to LM Studio at {base_url}, model={lm_model}")
+
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model=lm_model,
+            base_url=base_url,
+            api_key="lm-studio",  # LM Studio doesn't require a real key
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
     else:
         raise ValueError(f"Unsupported LLM provider: {provider}")
+

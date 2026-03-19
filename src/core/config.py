@@ -21,6 +21,7 @@ class LLMProvider(str, Enum):
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     OLLAMA = "ollama"
+    LMSTUDIO = "lmstudio"
 
 
 class ScanPhase(str, Enum):
@@ -54,6 +55,10 @@ class LLMConfig(BaseSettings):
     # Ollama
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "llama3"
+
+    # LM Studio (OpenAI-compatible local server)
+    lmstudio_base_url: str = "http://localhost:1234/v1"
+    lmstudio_model: str = ""
 
     # LLM Parameters
     temperature: float = 0.1
@@ -227,6 +232,11 @@ class Config:
     def _validate_llm_config(self) -> None:
         """Ensure the selected LLM provider has a matching API key."""
         provider = self.llm.provider
+
+        # Local providers don't need API keys
+        if provider in (LLMProvider.OLLAMA, LLMProvider.LMSTUDIO):
+            return
+
         key_map = {
             LLMProvider.GEMINI: ("GOOGLE_API_KEY", self.llm.google_api_key),
             LLMProvider.OPENAI: ("OPENAI_API_KEY", self.llm.openai_api_key),
