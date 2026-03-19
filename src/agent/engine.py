@@ -324,6 +324,13 @@ class SecurityAgent:
             except Exception as e:
                 return f"🔒 SAFETY BLOCK: {str(e)}"
 
+            # Propagate sanitized target back to kwargs
+            sanitized = self.safety.sanitize_target(target)
+            if "target" in kwargs:
+                kwargs["target"] = sanitized
+            elif "query" in kwargs:
+                kwargs["query"] = sanitized
+
             # UI: tool started
             if self.ui:
                 self.ui.tool_start(tool_name)
@@ -900,11 +907,11 @@ class SecurityAgent:
             logger.info(f"📄 Spec file parsed: {len(spec_content):,} chars")
 
             # 2. Store raw spec in memory for later phases
-            self.memory.add(
+            self.memory.store(
                 content=spec_content[:5000],
-                metadata={"type": "spec_file", "source": spec_path},
                 category="spec",
                 session_id=self.session.id,
+                metadata={"type": "spec_file", "source": spec_path},
             )
 
             # 3. Send to LLM for analysis
@@ -915,7 +922,7 @@ class SecurityAgent:
             )
             self.token_tracker.track(prompt)
 
-            llm = self._get_or_create_llm()
+            llm = self.llm
             response = await llm.ainvoke([
                 SystemMessage(content=SYSTEM_PROMPT),
                 HumanMessage(content=prompt),
@@ -957,11 +964,11 @@ class SecurityAgent:
                 )
 
             # 7. Store in memory for later phases
-            self.memory.add(
+            self.memory.store(
                 content=json.dumps(spec_data, indent=2, default=str)[:5000],
-                metadata={"type": "spec_analysis", "endpoints_count": len(endpoints)},
                 category="spec_analysis",
                 session_id=self.session.id,
+                metadata={"type": "spec_analysis", "endpoints_count": len(endpoints)},
             )
 
             # 8. Add additional targets if found

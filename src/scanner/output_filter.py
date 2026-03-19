@@ -60,6 +60,17 @@ NOISE_PATTERNS = [
     r'^\s*Loading\s+templates?\s+',        # Template loading messages
 ]
 
+# Credential patterns to redact from output (prevent data leak to LLM/reports)
+CREDENTIAL_PATTERNS = [
+    (re.compile(r'(?i)(api[_-]?key|apikey|api[_-]?secret)\s*[=:]\s*\S+'), r'\1=***REDACTED***'),
+    (re.compile(r'(?i)(password|passwd|pwd)\s*[=:]\s*\S+'), r'\1=***REDACTED***'),
+    (re.compile(r'(?i)(token|bearer|auth)\s*[=:]\s*[A-Za-z0-9\-_.]{20,}'), r'\1=***REDACTED***'),
+    (re.compile(r'(?i)(secret[_-]?key)\s*[=:]\s*\S+'), r'\1=***REDACTED***'),
+    (re.compile(r'(?i)(aws_access_key_id|aws_secret_access_key)\s*[=:]\s*\S+'), r'\1=***REDACTED***'),
+    (re.compile(r'(?i)(private[_-]?key)\s*[=:]\s*\S+'), r'\1=***REDACTED***'),
+    (re.compile(r'(?i)(Authorization:\s*Bearer\s+)\S+', re.IGNORECASE), r'\1***REDACTED***'),
+]
+
 
 class OutputFilter:
     """
@@ -75,7 +86,11 @@ class OutputFilter:
         self.max_raw_output = max_raw_output
 
     def clean(self, output: str) -> str:
-        """Remove noise patterns from output."""
+        """Remove noise patterns and redact credentials from output."""
+        # Redact credentials first (before any truncation)
+        for pattern, replacement in CREDENTIAL_PATTERNS:
+            output = pattern.sub(replacement, output)
+
         lines = output.splitlines()
         cleaned = []
         for line in lines:

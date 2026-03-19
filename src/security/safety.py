@@ -8,10 +8,23 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import os
 import re
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+# Directories where wordlists may reside — block everything else
+ALLOWED_WORDLIST_DIRS = [
+    "/usr/share/wordlists",
+    "/usr/share/seclists",
+    "/opt/wordlists",
+    "/opt/seclists",
+    "/tmp/",
+]
+
+# Characters that should never appear in a target string
+_SHELL_META_CHARS = re.compile(r"[;|`$(){}\\!&<>\n\r]")
 
 # Commands that should NEVER be executed
 BLOCKED_COMMANDS = [
@@ -108,6 +121,54 @@ class SafetyGuard:
         self.allowed_scope = allowed_scope or []
         self.safe_mode = safe_mode
 
+    # ── Target Sanitization ──────────────────────────────────
+
+    @staticmethod
+    def sanitize_target(target: str) -> str:
+        """Strip shell metacharacters that could be used for injection.
+
+        Since commands run via create_subprocess_exec (no shell), these
+        chars have no effect, but stripping them prevents the LLM from
+        constructing payloads that could be dangerous if execution mode
+        ever changes.
+        """
+        return _SHELL_META_CHARS.sub("", target).strip()
+
+    def validate_all_targets(self, args: dict) -> None:
+        """Check scope for *every* argument that could contain a target.
+
+        The LLM may embed extra targets in fields like ``blind_url``,
+        ``urls``, or ``cookie`` header values.  We inspect all of them.
+        """
+        target_keys = {"target", "blind_url", "urls"}
+        for key in target_keys:
+            value = args.get(key, "")
+            if not value:
+                continue
+            # Handle comma-separated lists (e.g. urls field)
+            for fragment in str(value).split(","):
+                fragment = fragment.strip()
+                if fragment:
+                    self.validate_target(fragment)
+
+    @staticmethod
+    def validate_wordlist_path(path: str) -> None:
+        """Ensure wordlist paths resolve inside allowed directories.
+
+        Prevents the LLM from reading /etc/shadow or other sensitive files
+        by passing them as a "wordlist".
+        """
+        if not path:
+            return
+        resolved = os.path.realpath(path)
+        for allowed_dir in ALLOWED_WORDLIST_DIRS:
+            if resolved.startswith(os.path.realpath(allowed_dir)):
+                return
+        raise SafetyError(
+            f"Wordlist path '{path}' is outside allowed directories. "
+            f"Allowed: {ALLOWED_WORDLIST_DIRS}"
+        )
+
     def validate_command(self, command: str) -> bool:
         """
         Check if a command is safe to execute.
@@ -168,6 +229,11 @@ class SafetyGuard:
 
     def validate_tool_args(self, tool_name: str, args: dict) -> bool:
         """Validate tool-specific arguments for safety."""
+        # ── Wordlist path validation (applies to any tool) ─────────
+        for key in ("wordlist",):
+            if wl := args.get(key):
+                self.validate_wordlist_path(wl)
+
         # SQLMap: prevent --os-pwn and --os-bof
         if tool_name == "sqlmap":
             dangerous_flags = {"os_pwn", "os_bof", "reg_read", "reg_add", "reg_del"}
@@ -223,7 +289,11 @@ class SafetyGuard:
 
     def check_all(self, target: str, tool_name: str, args: dict, command: str = "") -> bool:
         """Run all safety checks."""
+        # Sanitize the primary target
+        target = self.sanitize_target(target)
         self.validate_target(target)
+        # Check scope for all target-like arguments
+        self.validate_all_targets(args)
         self.validate_tool_args(tool_name, args)
         if command:
             self.validate_command(command)
